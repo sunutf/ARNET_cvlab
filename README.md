@@ -15,6 +15,12 @@
 
 In European Conference on Computer Vision (ECCV), 2020
 
+## CVLAB_jhseon comments
+from /MD1400, compare with this train/val set
+video / ref_list( not matched)
+train : 10025 / 10024(7)
+val   : 4926 / 4926(5)
+
 
 ## Reference
 If you find our code or project useful for your research, please cite:

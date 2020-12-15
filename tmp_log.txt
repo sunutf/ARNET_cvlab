@@ -1,0 +1,45 @@
+======== TEST MODE ========
+actnet: 200 classes
+[INFO] Register count_convNd() for <class 'torch.nn.modules.conv.Conv2d'>.
+[INFO] Register count_bn() for <class 'torch.nn.modules.batchnorm.BatchNorm2d'>.
+[INFO] Register zero_ops() for <class 'torch.nn.modules.activation.ReLU'>.
+[INFO] Register zero_ops() for <class 'torch.nn.modules.pooling.MaxPool2d'>.
+[91m[WARN] Cannot find rule for <class 'torch.nn.modules.container.Sequential'>. Treat it as zero Macs and zero Params.[00m
+[91m[WARN] Cannot find rule for <class 'torchvision.models.resnet.Bottleneck'>. Treat it as zero Macs and zero Params.[00m
+[INFO] Register count_adap_avgpool() for <class 'torch.nn.modules.pooling.AdaptiveAvgPool2d'>.
+[INFO] Register count_linear() for <class 'torch.nn.modules.linear.Linear'>.
+[91m[WARN] Cannot find rule for <class 'torchvision.models.resnet.ResNet'>. Treat it as zero Macs and zero Params.[00m
+[INFO] Register count_convNd() for <class 'torch.nn.modules.conv.Conv2d'>.
+[INFO] Register count_bn() for <class 'torch.nn.modules.batchnorm.BatchNorm2d'>.
+[INFO] Register zero_ops() for <class 'torch.nn.modules.activation.ReLU'>.
+[INFO] Register zero_ops() for <class 'torch.nn.modules.pooling.MaxPool2d'>.
+[91m[WARN] Cannot find rule for <class 'torchvision.models.resnet.BasicBlock'>. Treat it as zero Macs and zero Params.[00m
+[91m[WARN] Cannot find rule for <class 'torch.nn.modules.container.Sequential'>. Treat it as zero Macs and zero Params.[00m
+[INFO] Register count_adap_avgpool() for <class 'torch.nn.modules.pooling.AdaptiveAvgPool2d'>.
+[INFO] Register count_linear() for <class 'torch.nn.modules.linear.Linear'>.
+[91m[WARN] Cannot find rule for <class 'torchvision.models.resnet.ResNet'>. Treat it as zero Macs and zero Params.[00m
+[INFO] Register count_convNd() for <class 'torch.nn.modules.conv.Conv2d'>.
+[INFO] Register count_bn() for <class 'torch.nn.modules.batchnorm.BatchNorm2d'>.
+[INFO] Register zero_ops() for <class 'torch.nn.modules.activation.ReLU'>.
+[INFO] Register zero_ops() for <class 'torch.nn.modules.pooling.MaxPool2d'>.
+[91m[WARN] Cannot find rule for <class 'torchvision.models.resnet.BasicBlock'>. Treat it as zero Macs and zero Params.[00m
+[91m[WARN] Cannot find rule for <class 'torch.nn.modules.container.Sequential'>. Treat it as zero Macs and zero Params.[00m
+[INFO] Register count_adap_avgpool() for <class 'torch.nn.modules.pooling.AdaptiveAvgPool2d'>.
+[INFO] Register count_linear() for <class 'torch.nn.modules.linear.Linear'>.
+[91m[WARN] Cannot find rule for <class 'torchvision.models.resnet.ResNet'>. Treat it as zero Macs and zero Params.[00m
+[INFO] Register count_convNd() for <class 'torch.nn.modules.conv.Conv2d'>.
+[INFO] Register count_bn() for <class 'torch.nn.modules.batchnorm.BatchNorm2d'>.
+[INFO] Register zero_ops() for <class 'torch.nn.modules.activation.ReLU6'>.
+[91m[WARN] Cannot find rule for <class 'torchvision.models.mobilenet.ConvBNReLU'>. Treat it as zero Macs and zero Params.[00m
+[91m[WARN] Cannot find rule for <class 'torch.nn.modules.container.Sequential'>. Treat it as zero Macs and zero Params.[00m
+[91m[WARN] Cannot find rule for <class 'torchvision.models.mobilenet.InvertedResidual'>. Treat it as zero Macs and zero Params.[00m
+[INFO] Register count_linear() for <class 'torch.nn.modules.linear.Linear'>.
+[91m[WARN] Cannot find rule for <class 'torchvision.models.mobilenet.MobileNetV2'>. Treat it as zero Macs and zero Params.[00m
+gflops_table: 
+resnet50224         : 4.1099 GFLOPS
+resnet34168         : 2.2489 GFLOPS
+resnet18112         : 0.4862 GFLOPS
+policy              : 0.0527 GFLOPS
+lstm                : 0.0033 GFLOPS
+Test mode load from pretrained model
+done loading	foo                      	(res: -1) from	../logs_tsm/test_suite/ar-net/models/exp8_res_ada_new.pth.tar

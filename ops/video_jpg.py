@@ -47,7 +47,6 @@ if __name__ == "__main__":
     print("%d videos to handle (after %d being removed)" % (len(file_names), len(del_list)))
     cmd_list = []
     for file_name in tqdm(file_names):
-
         name, ext = os.path.splitext(file_name)
         dst_directory_path = os.path.join(dst_dir_path, name)
 
@@ -55,15 +54,20 @@ if __name__ == "__main__":
         if not os.path.exists(dst_directory_path):
             os.makedirs(dst_directory_path, exist_ok=True)
 
+        if len(os.listdir(dst_directory_path)) != 0:
+            continue
+
+        print(len((os.listdir(dst_directory_path))))
+        print(dst_directory_path)
         if args.frame_rate > 0:
             frame_rate_str = "-r %d" % args.frame_rate
         else:
             frame_rate_str = ""
-        cmd = 'ffmpeg -nostats -loglevel 0 -i {} -vf scale=-1:360 {} {}/{}'.format(video_file_path, frame_rate_str,
-                                                                                   dst_directory_path, args.prefix)
+            cmd = 'ffmpeg -nostats -loglevel 0 -i {} -vf scale=-1:360 {} {}/{}'.format(video_file_path, frame_rate_str,
+                                                                       dst_directory_path, args.prefix)
         if not args.parallel:
             if args.dry_run:
-                print(cmd)
+                 print(cmd)
             else:
                 subprocess.call(cmd, shell=True)
         cmd_list.append(cmd)
