@@ -1,7 +1,7 @@
 import warnings
 
 warnings.filterwarnings("ignore")
-
+import wandb
 import os
 import sys
 import time
@@ -100,7 +100,8 @@ def load_to_sd(model_dict, model_path, module_name, fc_name, resolution, apple_t
 def main():
     t_start = time.time()
     global args, best_prec1, num_class, use_ada_framework  # , model
-
+    wandb.init(project="arnet-reproduce")
+    wandb.config.update(args)
     set_random_seed(args.random_seed)
     use_ada_framework = args.ada_reso_skip and args.offline_lstm_last == False and args.offline_lstm_all == False and args.real_scsampler == False
 
@@ -115,6 +116,10 @@ def main():
 
     num_class, args.train_list, args.val_list, args.root_path, prefix = dataset_config.return_dataset(args.dataset,
                                                                                                       args.data_dir)
+    
+    #===
+    #args.val_list = args.train_list
+    #===
 
     if args.ada_reso_skip:
         if len(args.ada_crop_list) == 0:
@@ -141,7 +146,6 @@ def main():
         flip=False if 'something' in args.dataset or 'jester' in args.dataset else True)
 
     model = torch.nn.DataParallel(model, device_ids=args.gpus).cuda()
-
     # TODO(yue) freeze some params in the policy + lstm layers
     if args.freeze_policy:
         for name, param in model.module.named_parameters():
@@ -674,7 +678,7 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
     meta_offset = -2 if args.save_meta else 0
 
     model.module.partialBN(not args.no_partialbn)
-
+    wandb.watch(model)
     # switch to train mode
     model.train()
 
@@ -802,6 +806,9 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
                             'Prec@5 {top5.val:.3f} ({top5.avg:.3f})\t'.format(
                 epoch, i, len(train_loader), batch_time=batch_time,
                 data_time=data_time, loss=losses, top1=top1, top5=top5))  # TODO
+            wandb.log({ "Train Loss val" : losses.val,
+                        "Train Prec@1 val" : top1.val,
+                        "Train Prec@5 val" : top5.val })
 
             if use_ada_framework:
                 roh_r = reverse_onehot(r[-1, :, :].detach().cpu().numpy())
@@ -968,6 +975,11 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                                 'Prec@5 {top5.val:.3f} ({top5.avg:.3f})\t'.format(
                     i, len(val_loader), batch_time=batch_time, loss=losses,
                     top1=top1, top5=top5))
+
+                wandb.log({"Test Loss" : losses.val,
+                        "Test Prec@1" : top1.val,
+                        "Test Prec@5" : top5.val })
+                
                 if use_ada_framework:
                     roh_r = reverse_onehot(r[-1, :, :].cpu().numpy())
 
@@ -1032,7 +1044,7 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
 def save_checkpoint(state, is_best, exp_full_path):
     if is_best:
         torch.save(state, '%s/models/ckpt.best.pth.tar' % (exp_full_path))
-
+        torch.save(state, os.path.join(wandb.run.dir, '/models/ckpt.best.pth.tar'))
 
 def adjust_learning_rate(optimizer, epoch, lr_type, lr_steps):
     """Sets the learning rate to the initial LR decayed by 10 every 30 epochs"""
