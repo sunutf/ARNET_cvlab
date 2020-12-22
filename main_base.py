@@ -100,7 +100,11 @@ def load_to_sd(model_dict, model_path, module_name, fc_name, resolution, apple_t
 def main():
     t_start = time.time()
     global args, best_prec1, num_class, use_ada_framework  # , model
-    wandb.init(project="arnet-reproduce")
+    wandb.init(
+        project="arnet-reproduce",
+        name=args.exp_header,
+        entity="video_channel"
+    )
     wandb.config.update(args)
     set_random_seed(args.random_seed)
     use_ada_framework = args.ada_reso_skip and args.offline_lstm_last == False and args.offline_lstm_all == False and args.real_scsampler == False
@@ -371,6 +375,7 @@ def main():
     best_train_usage_str = None
     best_val_usage_str = None
 
+    wandb.watch(model)
     for epoch in range(args.start_epoch, args.epochs):
         # train for one epoch
         if not args.skip_training:
@@ -678,7 +683,6 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
     meta_offset = -2 if args.save_meta else 0
 
     model.module.partialBN(not args.no_partialbn)
-    wandb.watch(model)
     # switch to train mode
     model.train()
 
@@ -1044,7 +1048,6 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
 def save_checkpoint(state, is_best, exp_full_path):
     if is_best:
         torch.save(state, '%s/models/ckpt.best.pth.tar' % (exp_full_path))
-        torch.save(state, os.path.join(wandb.run.dir, '/models/ckpt.best.pth.tar'))
 
 def adjust_learning_rate(optimizer, epoch, lr_type, lr_steps):
     """Sets the learning rate to the initial LR decayed by 10 every 30 epochs"""
