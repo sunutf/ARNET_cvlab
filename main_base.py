@@ -207,7 +207,7 @@ def main():
             print(("=> no checkpoint found at '{}'".format(args.resume)))
 
     if args.tune_from:
-        print(("=> fine-tuning from '{}'".format(args.tune_from)))
+        print(("=> f/ine-tuning from '{}'".format(args.tune_from)))
         sd = torch.load(args.tune_from)
         sd = sd['state_dict']
         model_dict = model.state_dict()
@@ -847,6 +847,20 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
 
     i_dont_need_bb = True
 
+    if args.visual_log != '':
+        try:
+            if not(os.path.isdir(args.visual_log)):
+               os.makedirs(ospj(args.visual_log_path))
+            
+            visual_log_path = args.visual_log
+            visual_log_txt_path = ospj(visual_log_path, "visual_log.txt")
+            visual_log = open(visual_log_txt_path, "w") 
+        
+        except OSError as e:
+            if e.errno != errno.EEXIST:
+                print("Failed to create directory!!!")
+                raise
+
     if use_ada_framework:
         tau = get_current_temperature(epoch)
         alosses, elosses = get_average_meters(2)
@@ -943,6 +957,36 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
             else:
                 output = model(input=[input])
                 loss = get_criterion_loss(criterion, output, target)
+
+            if visual_log_path != '':
+                print('input')
+                print(len(input_tuple))
+                print(input_tuple[0].shape)
+                print(input_tuple[1].shape)
+                print(input_tuple[2].shape)
+                print(input_tuple[3].shape)
+                print(input_tuple[4].shape)
+                print(input_tuple[4][0].cpu().numpy())
+                print('target')
+                print(target.shape)
+                print(target.cpu().numpy())
+                print('output')
+                print(output.shape)
+                print(output.max(dim=1))
+                print('r')
+                print(r.shape)
+                for i in range(48):
+                    print(reverse_onehot(r[i, :, :].cpu().numpy()))
+
+            #    visual_log.write("output: ")
+            #    visual_log.write(output)
+            #    visual_log.write(" target: ")
+            #    visual_log.write(target)
+            #    visual_log.write(" r: ")
+            #    visual_log.write(r)
+            #    visual_log.write("\n")
+
+    
 
             # TODO(yue)
             all_results.append(output)
@@ -1042,6 +1086,10 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
         tf_writer.add_scalar('acc/test_top1', top1.avg, epoch)
         tf_writer.add_scalar('acc/test_top5', top5.avg, epoch)
 
+
+    if visual_log_path != '':
+        visual_log.close()
+
     return mAP, mmAP, top1.avg, usage_str if use_ada_framework else None, gflops
 
 
@@ -1087,8 +1135,9 @@ if __name__ == '__main__':
     args = parser.parse_args()
     test_mode = (args.test_from != "")
 
-    if test_mode:  # TODO test mode
+    if test_mode:  # TODO test mode:
         print("======== TEST MODE ========")
         args.skip_training = True
 
     main()
+
