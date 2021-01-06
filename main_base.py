@@ -120,7 +120,7 @@ def main():
 
     num_class, args.train_list, args.val_list, args.root_path, prefix = dataset_config.return_dataset(args.dataset,
                                                                                                       args.data_dir)
-    
+
     #===
     #args.val_list = args.train_list
     #===
@@ -263,9 +263,15 @@ def main():
             for i, tmp_path in enumerate(args.model_paths):
                 base_model_index = i
                 new_i = i
+              
+                if args.backbone_list[0] != args.backbone_list[1] : 
+                    sd = load_to_sd(model_dict, tmp_path, "base_model_list.%d" % base_model_index, "new_fc_list.%d" % new_i, args.reso_list[i])
+               
 
-                sd = load_to_sd(model_dict, tmp_path, "base_model_list.%d" % base_model_index, "new_fc_list.%d" % new_i,
-                                args.reso_list[i])
+                else :
+                    if i == 0 :
+                        sd = load_to_sd(model_dict, tmp_path, "base_model_list.%d" % base_model_index, "new_fc_list.%d" % new_i, args.reso_list[i])
+                
                 model_dict.update(sd)
             model.load_state_dict(model_dict)
     else:
@@ -850,12 +856,12 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
     if args.visual_log != '':
         try:
             if not(os.path.isdir(args.visual_log)):
-               os.makedirs(ospj(args.visual_log_path))
-            
+               os.makedirs(ospj(args.visual_log))
+
             visual_log_path = args.visual_log
             visual_log_txt_path = ospj(visual_log_path, "visual_log.txt")
-            visual_log = open(visual_log_txt_path, "w") 
-        
+            visual_log = open(visual_log_txt_path, "w")
+
         except OSError as e:
             if e.errno != errno.EEXIST:
                 print("Failed to create directory!!!")
@@ -887,6 +893,7 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
     with torch.no_grad():
         for i, input_tuple in enumerate(val_loader):
 
+            #input_tuple = input_tuple[0]
             target = input_tuple[-1].cuda()
             input = input_tuple[0]
 
@@ -958,35 +965,41 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                 output = model(input=[input])
                 loss = get_criterion_loss(criterion, output, target)
 
-            if visual_log_path != '':
-                print('input')
-                print(len(input_tuple))
-                print(input_tuple[0].shape)
-                print(input_tuple[1].shape)
-                print(input_tuple[2].shape)
-                print(input_tuple[3].shape)
-                print(input_tuple[4].shape)
-                print(input_tuple[4][0].cpu().numpy())
+            if args.visual_log != '':
+                target_val = target.cpu().numpy()[0][0]
+                output_val = output.max(dim=1)[1].cpu().numpy()[0]
+
+                if target_val == output_val :
+                    print("True")
+                    visual_log.write("\nTrue")
+                else :
+                    print("False")
+                    visual_log.write("\nFalse")
+
+                print('input path list')
+                print(input_path_list[0])
+                print(lambda x : x.cpu.numpy(), input_path_list[1:])
                 print('target')
-                print(target.shape)
-                print(target.cpu().numpy())
+                print(target_val)
                 print('output')
-                print(output.shape)
-                print(output.max(dim=1))
+                print(output_val)
                 print('r')
-                print(r.shape)
-                for i in range(48):
+                for i in range(1):
                     print(reverse_onehot(r[i, :, :].cpu().numpy()))
 
-            #    visual_log.write("output: ")
-            #    visual_log.write(output)
-            #    visual_log.write(" target: ")
-            #    visual_log.write(target)
-            #    visual_log.write(" r: ")
-            #    visual_log.write(r)
-            #    visual_log.write("\n")
+                #visual_log.write('\ninput path list: ')
+                for i in range(len(input_path_list)):
+                    visual_log.write('\n')
+                    visual_log.write(str(input_path_list[i][0]))
 
-    
+                visual_log.write('\n')
+                visual_log.write(str(target_val))
+                visual_log.write('\n')
+                visual_log.write(str(output_val))
+                visual_log.write('\n')
+                for i in range(1):
+                    visual_log.writelines(str(reverse_onehot(r[i, :, :].cpu().numpy())))
+                visual_log.write('\n')
 
             # TODO(yue)
             all_results.append(output)
@@ -1027,7 +1040,7 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                 wandb.log({"Test Loss" : losses.val,
                         "Test Prec@1" : top1.val,
                         "Test Prec@5" : top5.val })
-                
+
                 if use_ada_framework:
                     roh_r = reverse_onehot(r[-1, :, :].cpu().numpy())
 
@@ -1087,7 +1100,7 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
         tf_writer.add_scalar('acc/test_top5', top5.avg, epoch)
 
 
-    if visual_log_path != '':
+    if args.visual_log != '':
         visual_log.close()
 
     return mAP, mmAP, top1.avg, usage_str if use_ada_framework else None, gflops
