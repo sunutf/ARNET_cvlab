@@ -263,14 +263,9 @@ def main():
             for i, tmp_path in enumerate(args.model_paths):
                 base_model_index = i
                 new_i = i
-              
-                if args.backbone_list[0] != args.backbone_list[1] : 
+                
+                if i == 0 :
                     sd = load_to_sd(model_dict, tmp_path, "base_model_list.%d" % base_model_index, "new_fc_list.%d" % new_i, args.reso_list[i])
-               
-
-                else :
-                    if i == 0 :
-                        sd = load_to_sd(model_dict, tmp_path, "base_model_list.%d" % base_model_index, "new_fc_list.%d" % new_i, args.reso_list[i])
                 
                 model_dict.update(sd)
             model.load_state_dict(model_dict)
