@@ -8,63 +8,8 @@ from ops.net_flops_table import feat_dim_dict
 
 from torch.distributions import Categorical
 import math
-
-class PositionalEncoding(nn.Module):
-
-    def __init__(self, d_model, dropout=0.1, max_len=5000):
-        super(PositionalEncoding, self).__init__()
-        self.dropout = nn.Dropout(p=dropout)
-
-        pe = torch.zeros(max_len, d_model)
-        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
-        pe = pe.unsqueeze(0).transpose(0, 1)
-        self.register_buffer('pe', pe)
-
-    def forward(self, x):
-        x = x + self.pe[:x.size(0), :]
-        return self.dropout(x)
-    
-class TransformerModel(nn.Module):
-
-    def __init__(self, ntoken, ninp, nhead=8, nhid, nlayers, dropout=0.5):
-        super(TransformerModel, self).__init__()
-        from torch.nn import TransformerEncoder, TransformerEncoderLayer
-        self.model_type = 'Transformer'
-        self.src_mask = None
-        self.pos_encoder = PositionalEncoding(ninp, dropout)
-        encoder_layers = TransformerEncoderLayer(ninp, nhead, nhid, dropout)
-        self.transformer_encoder = TransformerEncoder(encoder_layers, nlayers)
-        self.encoder = nn.Embedding(ntoken, ninp)
-        self.ninp = ninp
-        self.decoder = nn.Linear(ninp, ntoken)
-
-        self.init_weights()
-
-    def _generate_square_subsequent_mask(self, sz):
-        mask = (torch.triu(torch.ones(sz, sz)) == 1).transpose(0, 1)
-        mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0))
-        return mask
-
-    def init_weights(self):
-        initrange = 0.1
-        self.encoder.weight.data.uniform_(-initrange, initrange)
-        self.decoder.bias.data.zero_()
-        self.decoder.weight.data.uniform_(-initrange, initrange)
-
-    def forward(self, src):
-        if self.src_mask is None or self.src_mask.size(0) != len(src):
-            device = src.device
-            mask = self._generate_square_subsequent_mask(len(src)).to(device)
-            self.src_mask = mask
-
-        src = self.encoder(src) * math.sqrt(self.ninp)
-        src = self.pos_encoder(src)
-        output = self.transformer_encoder(src, self.src_mask)
-        output = self.decoder(output)
-        return output
+from .transformer import TransformerModel
+import pdb
 
 def init_hidden(batch_size, cell_size):
     init_cell = torch.Tensor(batch_size, cell_size).zero_()
@@ -85,7 +30,7 @@ class TSN_Ada(nn.Module):
         self.crop_num = crop_num
         self.consensus_type = consensus_type
         self.pretrain = pretrain
-
+        
         self.fc_lr5 = fc_lr5
 
         # TODO(yue)
@@ -97,6 +42,7 @@ class TSN_Ada(nn.Module):
         self.num_class = num_class
         self.multi_models = False
         self.time_steps = self.num_segments
+        self.use_transformer = args.use_transformer
 
         if self.args.ada_reso_skip:
             self.reso_dim = self._get_resolution_dimension()
@@ -117,8 +63,8 @@ class TSN_Ada(nn.Module):
         if partial_bn:
             self.partialBN(True)
             
-        if args.use_transformer is True:
-            
+        if self.use_transformer:
+            self.transformer = TransformerModel()
             
 
     def _extends_to_multi_models(self):
@@ -249,7 +195,7 @@ class TSN_Ada(nn.Module):
 
         conv_cnt = 0
         bn_cnt = 0
-        for m in self.modules():
+        for n, m in self.named_modules():
             if isinstance(m, torch.nn.Conv2d) or isinstance(m, torch.nn.Conv1d):
                 ps = list(m.parameters())
                 conv_cnt += 1
@@ -273,7 +219,7 @@ class TSN_Ada(nn.Module):
                     else:
                         normal_bias.append(ps[1])
 
-            elif isinstance(m, torch.nn.BatchNorm2d):
+            elif isinstance(m, torch.nn.BatchNorm2d) or isinstance(m, torch.nn.LayerNorm):
                 bn_cnt += 1
                 # later BN's are frozen
                 if not self._enable_pbn or bn_cnt == 1:
@@ -288,7 +234,7 @@ class TSN_Ada(nn.Module):
 
             elif len(m._modules) == 0:
                 if len(list(m.parameters())) > 0:
-                    raise ValueError("New atomic module type: {}. Need to give it a learning policy".format(type(m)))
+                    raise ValueError("New atomic module type: {} {}. Need to give it a learning policy".format(n, type(m)))
 
         return [
             {'params': first_conv_weight, 'lr_mult': 1, 'decay_mult': 1,
@@ -326,11 +272,16 @@ class TSN_Ada(nn.Module):
             feat = the_base_model(input_2d)
 
         _base_out = None
+
         if b_t_c:
             if new_fc is not None:
+                if self.use_transformer:
+                    feat = self.transformer(feat.view(_b, _t, -1).permute(1,0,2).contiguous()).permute(1,0,2).contiguous().view(_b*_t,-1)
                 _base_out = new_fc(feat.view(_b * _t, -1)).view(_b, _t, -1)
         else:
             if new_fc is not None:
+                if self.use_transformer:
+                    feat = self.transformer(feat.view(_b, _t, -1).permute(1,0,2).contiguous()).permute(1,0,2).contiguous().view(_b*_t,-1)
                 _base_out = new_fc(feat).view(_b, _t, -1)
             feat = feat.view(_b, _t, -1)
         return feat, _base_out
@@ -535,3 +486,5 @@ class TSN_Ada(nn.Module):
         else:
             print('#' * 20, 'NO FLIP!!!')
             return torchvision.transforms.Compose([GroupMultiScaleCrop(self.input_size, [1, .875, .75, .66])])
+        
+    

@@ -20,7 +20,7 @@ parser.add_argument('--dropout', '--do', default=0.5, type=float,
 #                    choices=['nll'])
 parser.add_argument('--pretrain', type=str, default='imagenet')
 parser.add_argument('--tune_from', type=str, default=None, help='fine-tune from checkpoint')
-parser.add_argument('--use_transformer', default==False, action='store_true', help='using transformer module at the end of prediction')
+parser.add_argument('--use_transformer', default=False, action='store_true', help='using transformer module at the end of prediction')
 
 # ========================= Learning Configs ==========================
 parser.add_argument('--epochs', default=50, type=int, metavar='N',
