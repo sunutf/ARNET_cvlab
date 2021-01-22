@@ -77,6 +77,9 @@ parser.add_argument('--accuracy_weight', default=1., type=float)
 parser.add_argument('--efficency_weight', default=0., type=float)
 parser.add_argument('--show_pred', action='store_true')
 
+# adaptive depth skipping
+parser.add_argument('--ada_depth_skip', action='store_true', help='adaptively select depth of model')
+
 # TODO(yue) multi-label cases (for activity-net-v1.3)
 # Always provides (single + multi) mAPs. Difference is only in training
 parser.add_argument('--loss_type', type=str, default="nll", choices=['nll', 'bce'])

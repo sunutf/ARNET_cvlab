@@ -63,6 +63,8 @@ def get_gflops_params(model_name, resolution, num_classes, seg_len=-1, pretraine
 
 
 if __name__ == "__main__":
-    str_list = []
-    for s in str_list:
-        print(s)
+#     str_list = []
+#     for s in str_list:
+#         print(s)
+    
+    

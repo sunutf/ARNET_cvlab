@@ -23,7 +23,7 @@ class PositionalEncoding(nn.Module):
     
 class TransformerModel(nn.Module):
 
-    def __init__(self, ntoken=2048, ninp=512, nhead=8, nhid=2048, nlayers=6, dropout=0.5):
+    def __init__(self, ntoken=2048, ninp=512, nhead=8, nhid=2048, nlayers=1, dropout=0.1):
         super(TransformerModel, self).__init__()
         from torch.nn import TransformerEncoder, TransformerEncoderLayer
         self.model_type = 'Transformer'
@@ -49,10 +49,10 @@ class TransformerModel(nn.Module):
         self.decoder.weight.data.uniform_(-initrange, initrange)
 
     def forward(self, src):
-        if self.src_mask is None or self.src_mask.size(0) != len(src):
-            device = src.device
-            mask = self._generate_square_subsequent_mask(len(src)).to(device)
-            self.src_mask = mask
+#         if self.src_mask is None or self.src_mask.size(0) != len(src)
+#             device = src.device
+#             mask = self._generate_square_subsequent_mask(len(src)).to(device)
+#             self.src_mask = mask
 
         src = self.encoder(src) * math.sqrt(self.ninp)
         src = self.pos_encoder(src)
@@ -61,7 +61,8 @@ class TransformerModel(nn.Module):
         return output
 
 if __name__ == '__main__':
-    model = TransformerModel()
-    dummy = torch.randn(16,8,2048)
-    out = model(dummy)
+#     model = TransformerModel()
+#     dummy = torch.randn(16,8,2048)
+#     out = model(dummy)
+    print(PositionalEncoding(1).pe[:4].squeeze)
     pdb.set_trace()
