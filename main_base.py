@@ -811,9 +811,9 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
                             'Prec@5 {top5.val:.3f} ({top5.avg:.3f})\t'.format(
                 epoch, i, len(train_loader), batch_time=batch_time,
                 data_time=data_time, loss=losses, top1=top1, top5=top5))  # TODO
-            wandb.log({ "Train Loss val" : losses.val,
-                        "Train Prec@1 val" : top1.val,
-                        "Train Prec@5 val" : top5.val })
+#             wandb.log({ "Train Loss val" : losses.val,
+#                         "Train Prec@1 val" : top1.val,
+#                         "Train Prec@5 val" : top5.val })
 
             if use_ada_framework:
                 roh_r = reverse_onehot(r[-1, :, :].detach().cpu().numpy())
@@ -1032,9 +1032,9 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                     i, len(val_loader), batch_time=batch_time, loss=losses,
                     top1=top1, top5=top5))
 
-                wandb.log({"Test Loss" : losses.val,
-                        "Test Prec@1" : top1.val,
-                        "Test Prec@5" : top5.val })
+#                 wandb.log({"Test Loss" : losses.val,
+#                         "Test Prec@1" : top1.val,
+#                         "Test Prec@5" : top5.val })
 
                 if use_ada_framework:
                     roh_r = reverse_onehot(r[-1, :, :].cpu().numpy())
@@ -1052,6 +1052,9 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
     mmAP, _ = cal_map(torch.cat(all_results, 0).cpu(), torch.cat(all_targets, 0).cpu())  # TODO(yue)  multi-label mAP
     print('Testing: mAP {mAP:.3f} mmAP {mmAP:.3f} Prec@1 {top1.avg:.3f} Prec@5 {top5.avg:.3f} Loss {loss.avg:.5f}'
           .format(mAP=mAP, mmAP=mmAP, top1=top1, top5=top5, loss=losses))
+    wandb.log({"mAP" : mAP,
+            "Test mmAP" : mmAP,
+            "Test top1" : top1.val })
 
     if not i_dont_need_bb:
         bbmmaps = []
