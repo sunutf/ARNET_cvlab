@@ -5,18 +5,15 @@ from torch.nn.init import normal_, constant_
 import torch.nn.functional as F
 from efficientnet_pytorch import EfficientNet
 from ops.net_flops_table import feat_dim_dict
+from ops.amd_net_flops_table import feat_dim_of_res50_block
+
 
 from torch.distributions import Categorical
 import math
-from .transformer import TransformerModel
+from .transformer import TransformerModel, PositionalEncoding
 import pdb
 
-feat_dim_of_res50_block = {
-    'conv_2_with_base' = 256,
-    'conv_3' = 512,
-    'conv_4' = 1024,
-    'conv_5' = 2058
-}
+
 
 def init_hidden(batch_size, cell_size):
     init_cell = torch.Tensor(batch_size, cell_size).zero_()
@@ -24,30 +21,33 @@ def init_hidden(batch_size, cell_size):
         init_cell = init_cell.cuda()
     return init_cell
 
-class FramePositionalEncoding(nn.Module):
+# class FramePositionalEncoding(nn.Module):
 
-    def __init__(self, d_model, num_segments=16, dropout=0.1, max_len=5000):
-        super(PositionalEncoding, self).__init__()
-        self.dropout = nn.Dropout(p=dropout)
+#     def __init__(self, d_model, dropout=0.1, max_len=5000):
+#         super(PositionalEncoding, self).__init__()
+#         self.dropout = nn.Dropout(p=dropout)
 
-        pe = torch.zeros(max_len, d_model)
-        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
-        pe = pe.unsqueeze(0).transpose(0, 1)
-        self.register_buffer('pe', pe)
+#         pe = torch.zeros(max_len, d_model)
+#         position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+#         div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+#         pe[:, 0::2] = torch.sin(position * div_term)
+#         pe[:, 1::2] = torch.cos(position * div_term)
+#         pe = pe.unsqueeze(0).transpose(0, 1)
+#         self.register_buffer('pe', pe)
 
+#     def forward(self, x):
+#         x = x + self.pe[:x.size(0)].squeeze
+#         return self.dropout(x)
+    
+class SqueezeTwice(torch.nn.Module):
     def forward(self, x):
-        x = x + self.pe[:num_segments].squeeze
-        return self.dropout(x)
-
-
-class TSN_AMD(nn.Module):
+        return x.squeeze(-1).squeeze(-1)
+    
+class TSN_Amd(nn.Module):
     def __init__(self, num_class, num_segments,
                  base_model='resnet101', consensus_type='avg', before_softmax=True, dropout=0.8,
                  crop_num=1, partial_bn=True, pretrain='imagenet', fc_lr5=False, args=None):
-        super(TSN_Ada, self).__init__()
+        super(TSN_Amd, self).__init__()
         self.num_segments = num_segments
         self.reshape = True
         self.before_softmax = before_softmax
@@ -70,7 +70,6 @@ class TSN_AMD(nn.Module):
         self.use_transformer = args.use_transformer       
 
         self._prepare_base_model(base_model) #return self.base_model 
-        self._prepare_fc(num_class)          #return self.new_fc
         self.consensus = ConsensusModule(consensus_type, args=self.args)
 
         if self.args.ada_reso_skip:
@@ -79,13 +78,20 @@ class TSN_AMD(nn.Module):
             self.action_dim = self._get_action_dimension()
             self._prepare_policy_net()
             self._extends_to_multi_models()
+            self._prepare_fc(num_class)          #return self.new_fc
+
             
         if self.args.ada_depth_skip:
-            self.block_cnn_dict = dict()
-            self.block_rnn_dict = dict()
-            self.block_fc_dict  = dict() 
+            self.block_cnn_dict = nn.ModuleDict()
+            self.block_rnn_dict = nn.ModuleDict()
+            self.block_fc_dict  = nn.ModuleDict()
+            self.action_fc_dict = nn.ModuleDict()
+            
+            self.block_rnn_list = self.args.block_rnn_list
+            
+            self.amd_action_dim = 2 #0 , 1 (skip(0) or pass(1))
 
-            self.frame_pos_encoder = PositionalEncoding(1).pe[:self.time_steps].squeeze()
+#             self.frame_pos_encoder = FramePositionalEncoding(d_model=self.args.hidden_dim, max_len=self.time_steps) 
 
             self._split_base_cnn_to_block(self.base_model)
             self._prepare_policy_block(self.base_model)
@@ -99,14 +105,13 @@ class TSN_AMD(nn.Module):
             
         if self.use_transformer:
             self.transformer = TransformerModel()
- 
-'''adaptive model depth'''
 
     def _split_base_cnn_to_block(self, _model):
-        self.block_cnn_dict['conv_2_with_base'] = torch.nn.Sequential(*(list(_model.children())[:5]))
-        self.block_cnn_dict['conv_3']           = torch.nn.Sequential(*(list(_model.children())[5]))
-        self.block_cnn_dict['conv_4']           = torch.nn.Sequential(*(list(_model.children())[6]))
-        self.block_cnn_dict['conv_5']           = torch.nn.Sequential(*(list(_model.children())[7]))
+        self.block_cnn_dict['base']   = torch.nn.Sequential(*(list(_model.children())[:4]))
+        self.block_cnn_dict['conv_2'] = torch.nn.Sequential(*(list(_model.children())[4]))
+        self.block_cnn_dict['conv_3'] = torch.nn.Sequential(*(list(_model.children())[5]))
+        self.block_cnn_dict['conv_4'] = torch.nn.Sequential(*(list(_model.children())[6]))
+        self.block_cnn_dict['conv_5'] = torch.nn.Sequential(*(list(_model.children())[7]))
         
     def _prepare_policy_block(self, _model): #avg-pooling / fc / P.E. / lstm 
         def make_a_linear(input_dim, output_dim):
@@ -116,28 +121,21 @@ class TSN_AMD(nn.Module):
             return linear_model
         
         for name in self.block_cnn_dict.keys():
-            feat_dim = feat_dim_of_res50_block[name]
-            self.block_fc_dict[name] = torch.nn.Sequential(
-                torch.nn.AdaptiveAvgPool2d(output_size=(1, 1)),
-                make_a_linear(feat_dim, feat_dim)
-            )
-            self.block_rnn_dict[name] = torch.nn.LSTMCell(input_size=feat_dim, hidden_size=self.args.hidden_dim)
-        
-            feat_dim = getattr(self.base_model, 'fc').in_features
-            self.self.block_fc_dict['new_fc'] = torch.nn.Sequential(
-                torch.nn.Sequential(*(list(_model.children())[8])),
-                torch.nn.Dropout(p=self.dropout),
-                make_a_linear(feat_dim, self.num_class)
-            )
+            if name is not 'base':
+                feat_dim = feat_dim_of_res50_block[name]
+                self.block_fc_dict[name] = torch.nn.Sequential(
+                    torch.nn.AdaptiveAvgPool2d(output_size=(1, 1)),
+                    SqueezeTwice(),
+                    make_a_linear(feat_dim, feat_dim)
+                )
+                self.block_rnn_dict[name] = torch.nn.LSTMCell(input_size=feat_dim, hidden_size=self.args.hidden_dim)
+                self.action_fc_dict[name] = make_a_linear(self.args.hidden_dim, self.amd_action_dim)
 
-       
-'''===================='''        
+        
+        feat_dim = 2048   #getattr(self.base_model, 'fc').in_features
+        self.new_fc = make_a_linear(feat_dim, self.num_class)
+        
             
-    def _extends_to_multi_models(self):
-        if len(self.args.backbone_list) >= 1:
-            self.multi_models = True
-            self.base_model_list = nn.ModuleList()
-            self.new_fc_list = nn.ModuleList()
 
     def _prep_a_net(self, model_name, shall_pretrain):
         if "efficientnet" in model_name:
@@ -154,23 +152,6 @@ class TSN_AMD(nn.Module):
                 model.last_layer_name = 'classifier'
         return model
 
-    def _get_resolution_dimension(self):
-        reso_dim = 0
-        for i in range(len(self.args.backbone_list)):
-            reso_dim += self.args.ada_crop_list[i]
-        if self.args.policy_also_backbone:
-            reso_dim += 1
-        return reso_dim
-
-    def _get_action_dimension(self):
-        action_dim = self.reso_dim + self.skip_dim
-        return action_dim
-
-    def _prepare_policy_net(self):
-        shall_pretrain = not self.args.policy_from_scratch
-        self.lite_backbone = self._prep_a_net(self.args.policy_backbone, shall_pretrain)
-        self.policy_feat_dim = feat_dim_dict[self.args.policy_backbone]
-        self.rnn = nn.LSTMCell(input_size=self.policy_feat_dim, hidden_size=self.args.hidden_dim, bias=True)
 
     def _prepare_base_model(self, base_model):
         self.input_size = 224
@@ -181,50 +162,19 @@ class TSN_AMD(nn.Module):
             for bbi, backbone_name in enumerate(self.args.backbone_list):
                 model = self._prep_a_net(backbone_name, shall_pretrain)
                 self.base_model_list.append(model)
+        elif self.args.ada_depth_skip:
+            shall_pretrain = len(self.args.model_paths) == 0 or self.args.model_paths[0].lower() != 'none'
+            self.base_model = self._prep_a_net(base_model, shall_pretrain)
         else:
             self.base_model = self._prep_a_net(base_model, self.pretrain == 'imagenet')
 
-    def _prepare_fc(self, num_class):
-        def make_a_linear(input_dim, output_dim):
-            linear_model = nn.Linear(input_dim, output_dim)
-            normal_(linear_model.weight, 0, 0.001)
-            constant_(linear_model.bias, 0)
-            return linear_model
-
-        i_do_need_a_policy_network = True
-
-        if self.args.ada_reso_skip and i_do_need_a_policy_network:
-            setattr(self.lite_backbone, self.lite_backbone.last_layer_name, nn.Dropout(p=self.dropout))
-            feed_dim = self.args.hidden_dim if not self.args.frame_independent else self.policy_feat_dim
-            self.linear = make_a_linear(feed_dim, self.action_dim)
-            self.lite_fc = make_a_linear(feed_dim, num_class)
-
-        if self.multi_models:
-            multi_fc_list = [None]
-            for bbi, base_model in enumerate(self.base_model_list):
-                for fc_i, exit_index in enumerate(multi_fc_list):
-                    last_layer_name = base_model.last_layer_name
-                    feature_dim = getattr(base_model, last_layer_name).in_features
-
-                    new_fc = make_a_linear(feature_dim, num_class)
-                    self.new_fc_list.append(new_fc)
-                    setattr(base_model, last_layer_name, nn.Dropout(p=self.dropout))
-
-        elif self.base_model_name is not None:
-            if "mobilenet_v2" == self.base_model_name:
-                feature_dim = getattr(self.base_model, self.base_model.last_layer_name)[1].in_features
-            else:
-                feature_dim = getattr(self.base_model, self.base_model.last_layer_name).in_features
-
-            setattr(self.base_model, self.base_model.last_layer_name, nn.Dropout(p=self.dropout))
-            self.new_fc = make_a_linear(feature_dim, num_class)
-
+ 
     def train(self, mode=True):
         """
         Override the default train() to freeze the BN parameters
         :return:
         """
-        super(TSN_Ada, self).train(mode)
+        super(TSN_Amd, self).train(mode)
         if self._enable_pbn and mode:
             print("Freezing BatchNorm2D except the first one.")
             if self.args.ada_reso_skip:
@@ -322,42 +272,10 @@ class TSN_AMD(nn.Module):
              'name': "lr10_bias"},
         ]
 
-    def backbone(self, input_data, the_base_model, new_fc, signal=-1, indices_list=[], boost=False, b_t_c=False,
-                 **kwargs):
-        _b, _tc, _h, _w = input_data.shape  # TODO(yue) input (B, T*C, H, W)
-        _t, _c = _tc // 3, 3
-
-        if b_t_c:
-            input_b_t_c = input_data.view(_b, _t, _c, _h, _w)
-        else:
-            input_2d = input_data.view(_b * _t, _c, _h, _w)
-
-        if b_t_c:
-            feat = the_base_model(input_b_t_c, signal=signal, **kwargs)
-        else:
-            feat = the_base_model(input_2d)
-
-        _base_out = None
-
-        if b_t_c:
-            if new_fc is not None:
-                if self.use_transformer:
-                    feat = self.transformer(feat.view(_b, _t, -1).permute(1,0,2).contiguous()).permute(1,0,2).contiguous().view(_b*_t,-1)
-                _base_out = new_fc(feat.view(_b * _t, -1)).view(_b, _t, -1)
-        else:
-            if new_fc is not None:
-                if self.use_transformer:
-                    feat = self.transformer(feat.view(_b, _t, -1).permute(1,0,2).contiguous()).permute(1,0,2).contiguous().view(_b*_t,-1)
-                _base_out = new_fc(feat).view(_b, _t, -1)
-            feat = feat.view(_b, _t, -1)
-        return feat, _base_out
+  
     
-     def block_backbone(self, name, input_data, the_base_model, new_fc, signal=-1, indices_list=[], boost=False, b_t_c=False,
-                 **kwargs):
-            
-        _base_out = None
-        
-        if name is 'conv2_with_base':
+    def block_cnn_backbone(self, name, input_data, the_base_model, signal=-1, indices_list=[], boost=False, b_t_c=False, **kwargs):
+        if name is 'base':
             _b, _tc, _h, _w = input_data.shape  # TODO(yue) input (B, T*C, H, W)
             _t, _c = _tc // 3, 3
 
@@ -365,119 +283,85 @@ class TSN_AMD(nn.Module):
                 input_b_t_c = input_data.view(_b, _t, _c, _h, _w)
             else:
                 input_2d = input_data.view(_b * _t, _c, _h, _w)  
-                
-        if the_base_model:
+
             if b_t_c:
                 feat = the_base_model(input_b_t_c, signal=signal, **kwargs)
             else:
                 feat = the_base_model(input_2d)
+        else:
+            feat = the_base_model(input_data)
 
-        if new_fc:
-            if name is 'new_fc' and the_base_model is None:
-               if self.use_transformer:
-                    feat = input_data
-                    feat = self.transformer(feat.view(_b, _t, -1).permute(1,0,2).contiguous()).permute(1,0,2).contiguous().view(_b*_t,-1)
-                if b_t_c:
-                    _base_out = new_fc(feat.view(_b * _t, -1)).view(_b, _t, -1)
-                else:
-                    _base_out = new_fc(feat).view(_b, _t, -1)
-                feat = feat.view(_b, _t, -1)
-            else:
-                _base_out = new_fc(feat)
-
+        return feat
+    
+    def block_fc_backbone(self, name, input_data, new_fc, signal=-1, indices_list=[], boost=False, b_t_c=False,
+                 **kwargs):
+        
+        feat = input_data
+        _bt = input_data.shape[0]
+        _b, _t = _bt // self.time_steps, self.time_steps
+        
+        if b_t_c:
+            _base_out = new_fc(feat.view(_b * _t, -1)).view(_b, _t, -1)
+        else:
+            _base_out = new_fc(feat).view(_b, _t, -1)
+        feat = feat.view(_b, _t, -1)
+       
         return feat, _base_out
 
-    def pass_cnn_fc_block(self, name, input_data, online_policy):
-        if online_policy:
-            return self.block_backbone(name, input_data, self.block_cnn_dict[name], self.block_fc_dict[name]) # 224 size         
-        else:
-            return self.block_backbone(name, input_data, self.block_cnn_dict[name], None) 
+
+        
+    """
+    input: B, T*C, H, W 
+    output: B, T*C, H', W'
+    ex: depend on conv_name
+    """
+    def pass_cnn_block(self, name, input_data):
+        return self.block_cnn_backbone(name, input_data, self.block_cnn_dict[name]) 
                     
-    def gate_rnn_block(self, name, input_data):
-        if not input_data: #pass policy
-            return True  
-        else:
-            if True: #next block
-                return True 
-            else:    #next frame
-                return False
-    
-    def pass_base_fc_block(self, name, input_data):
-        return self.block_backbone(name, input_data, None, self.block_fc_dict[name]) 
-                   
-    
-    def get_lite_j_and_r(self, input_list, online_policy, tau):
-
-        feat_lite, _ = self.backbone(input_list[self.args.policy_input_offset], self.lite_backbone, None)
-
+    def gate_fc_rnn_block(self, name, input_data, tau, candidate_list):
+        
         r_list = []
-        lite_j_list = []
-        batch_size = feat_lite.shape[0]
-        hx = init_hidden(batch_size, self.args.hidden_dim)
-        cx = init_hidden(batch_size, self.args.hidden_dim)
+        if name in self.block_rnn_dict.keys(): # gate activate = policy on 
+            _, base_out = self.block_fc_backbone(name, input_data, self.block_fc_dict[name])
+            
+            old_r_t = None
+            old_hx = None
+            batch_size = base_out.shape[0]
+            hx = init_hidden(batch_size, self.args.hidden_dim)
+            cx = init_hidden(batch_size, self.args.hidden_dim)
 
-        remain_skip_vector = torch.zeros(batch_size, 1)
-        old_hx = None
-        old_r_t = None
-
-        if self.args.use_reinforce:
-            log_prob_r_list = []
-            prob_r_list = []
-
-        for t in range(self.time_steps):
-            if self.args.frame_independent:
-                feat_t = feat_lite[:, t]
-            else:
-                hx, cx = self.rnn(feat_lite[:, t], (hx, cx))
-                feat_t = hx
-            if self.args.use_reinforce:
-                p_t = F.softmax(self.linear(feat_t), dim=1).clamp(min=1e-8)
-            else:
-                p_t = torch.log(F.softmax(self.linear(feat_t), dim=1).clamp(min=1e-8))
-            j_t = self.lite_fc(feat_t)
-            lite_j_list.append(j_t)  # TODO as pred
-
-            # TODO (yue) need a simple case to illustrate this
-            if online_policy:
-                if self.args.use_reinforce:
-                    m = Categorical(p_t)
-
-                    prob_r_list.append(p_t)
-
-                    r_t_idx = m.sample()
-                    r_t = torch.eye(self.action_dim)[r_t_idx].cuda()
-                    log_prob_r_t = m.log_prob(r_t_idx)
-                    log_prob_r_list.append(log_prob_r_t)
+            for t in range(self.time_steps):
+                if self.args.frame_independent:
+                    feat_t = base_out[:, t]
                 else:
+                    hx, cx = self.block_rnn_dict[name](base_out[:, t], (hx, cx))
+                    feat_t = hx
+                    p_t = torch.log(F.softmax(self.action_fc_dict[name](feat_t), dim=1).clamp(min=1e-8))
                     r_t = torch.cat(
                         [F.gumbel_softmax(p_t[b_i:b_i + 1], tau, True) for b_i in range(p_t.shape[0])])
+                    
+                    if old_hx is not None:
+                        take_bool = candidate_list[:, t, 0].unsqueeze(1) < 0.5
+                        take_old = torch.tensor(take_bool, dtype=torch.float).cuda()
+                        take_curr = torch.tensor(~take_bool, dtype=torch.float).cuda()
+                        hx = old_hx * take_old + hx * take_curr
+                        r_t = old_r_t * take_old + r_t * take_curr
+                   
+                    old_r_t = r_t 
+                    old_hx = hx
+                    r_list.append(r_t)  # TODO as decision
+            
+            r_list = torch.stack(r_list, dim=1)
 
-                # TODO update states and r_t
-                if old_hx is not None:
-                    take_bool = remain_skip_vector > 0.5
-                    take_old = torch.tensor(take_bool, dtype=torch.float).cuda()
-                    take_curr = torch.tensor(~take_bool, dtype=torch.float).cuda()
-                    hx = old_hx * take_old + hx * take_curr
-                    r_t = old_r_t * take_old + r_t * take_curr
-
-                # TODO update skipping_vector
-                for batch_i in range(batch_size):
-                    for skip_i in range(self.action_dim - self.reso_dim):
-                        # TODO(yue) first condition to avoid valuing skip vector forever
-                        if remain_skip_vector[batch_i][0] < 0.5 and r_t[batch_i][self.reso_dim + skip_i] > 0.5:
-                            remain_skip_vector[batch_i][0] = self.args.skip_list[skip_i]
-                old_hx = hx
-                old_r_t = r_t
-                r_list.append(r_t)  # TODO as decision
-                remain_skip_vector = (remain_skip_vector - 1).clamp(0)
-        if online_policy:
-            if self.args.use_reinforce:
-                return lite_j_list, torch.stack(r_list, dim=1), torch.stack(log_prob_r_list, dim=1)
-            else:
-                return lite_j_list, torch.stack(r_list, dim=1)
-        else:
-            return lite_j_list, None
-
+        return r_list
+    
+    def pass_last_fc_block(self, name, input_data):
+        avgpool = torch.nn.AdaptiveAvgPool2d(output_size=(1, 1))
+        input_data = avgpool(input_data)
+        input_data = torch.nn.Dropout(p=self.dropout)(input_data).squeeze(-1).squeeze(-1)
+        return self.block_fc_backbone(name, input_data, self.new_fc) 
+                   
+    
     def using_online_policy(self):
         if any([self.args.offline_lstm_all, self.args.offline_lstm_last]):
             return False
@@ -513,22 +397,12 @@ class TSN_AMD(nn.Module):
             fuse_data_list.append(fused_data)
         return torch.stack(fuse_data_list, dim=0).view(_b, _tc, _h, _w)
 
-    def get_feat_and_pred(self, input_list, r_all, **kwargs):
-        feat_out_list = []
-        base_out_list = []
-        ind_list = []
-
-        for bb_i, the_backbone in enumerate(self.base_model_list):
-            feat_out, base_out = self.backbone(input_list[bb_i], the_backbone, self.new_fc_list[bb_i])
-            feat_out_list.append(feat_out)
-            base_out_list.append(base_out)
-        return feat_out_list, base_out_list, ind_list
-
+   
     def late_fusion(self, base_out_list, in_matrix, out_matrix):
         return base_out_list
 
     def forward(self, *argv, **kwargs):
-        if not self.args.ada_reso_skip and not self.args.ada.depth_skip:  # TODO simple TSN
+        if not self.args.ada_reso_skip and not self.args.ada_depth_skip:  # TODO simple TSN
             _, base_out = self.backbone(kwargs["input"][0], self.base_model, self.new_fc,
                                         signal=self.args.default_signal)
             output = self.consensus(base_out)
@@ -536,65 +410,40 @@ class TSN_AMD(nn.Module):
 
         input_list = kwargs["input"]
         batch_size = input_list[0].shape[0]  # TODO(yue) input[0] B*(TC)*H*W
-        if self.args.ada_depth_skip :
-            _input = input_list[0]
-            for name in self.block_cnn_dict.keys():
-                _input, block_out = self.pass_cnn_fc_block(name, _input, self.using_online_policy())
-                #pos_encoder to block_out
-                policy_result = self.gate_rnn_block(name, block_out):   #next frame
-                        
-            if policy_result:
-                _, block_out = self.pass_base_fc_block('new_fc', _input)
-            
-        else:
-            if self.args.use_reinforce:
-                lite_j_list, r_all, r_log_prob = self.get_lite_j_and_r(input_list, self.using_online_policy(),
-                                                                       kwargs["tau"])
-            else:
-                lite_j_list, r_all = self.get_lite_j_and_r(input_list, self.using_online_policy(), kwargs["tau"])
+        _input = input_list[0]
+        candidate_list = torch.ones(batch_size, self.time_steps, self.amd_action_dim) #B, T, K
+        #candidate_list_log = torch.zeros(batch_size, self.time_steps, 1+len(self.args.block_rnn_list)) #B, T, K'
+        candidate_log_list = []
 
-            if self.multi_models:
-                if "tau" not in kwargs:
-                    kwargs["tau"] = None
+        for name in self.block_cnn_dict.keys():
+            # input image tensor with 224 size
+            _input = self.pass_cnn_block(name, _input) 
 
-                feat_out_list, base_out_list, ind_list = self.get_feat_and_pred(input_list, r_all, tau=kwargs["tau"])
-            else:
-                feat_out_list, base_out_list, ind_list = [], [], []
+            if name is not 'base':
+                # update candidate_list based on policy rnn
+                candidate_list = self.gate_fc_rnn_block(name, _input, kwargs["tau"], candidate_list)
 
-            if self.args.policy_also_backbone:
-                base_out_list.append(torch.stack(lite_j_list, dim=1))
+                take_bool = candidate_list[:,:,1] > 0.5
+                candidate_log_list.append(torch.tensor(take_bool.unsqueeze(-1), dtype=torch.float).cuda())
 
-            if self.args.offline_lstm_last:  # TODO(yue) no policy - use policy net as backbone - just LSTM(last)
-                return lite_j_list[-1].squeeze(1), None, None, None
 
-            elif self.args.offline_lstm_all:  # TODO(yue) no policy - use policy net as backbone - just LSTM(average)
-                return torch.stack(lite_j_list).mean(dim=0).squeeze(1), None, None, None
+        _, block_out = self.pass_last_fc_block('new_fc', _input)
 
-            elif self.args.real_scsampler:
-                real_pred = base_out_list[0]
-                lite_pred = torch.stack(lite_j_list, dim=1)
-                output, ind = self.consensus(real_pred, lite_pred)
-                return output.squeeze(1), ind, real_pred, lite_pred
+        output = self.amd_combine_logits(candidate_list[:,:,1], block_out)
+        return output.squeeze(1), torch.stack(candidate_log_list, dim=2), None, block_out
 
-            else:
-                if self.args.random_policy:  # TODO(yue) random policy
-                    r_all = torch.zeros(batch_size, self.time_steps, self.action_dim).cuda()
-                    for i_bs in range(batch_size):
-                        for i_t in range(self.time_steps):
-                            r_all[i_bs, i_t, torch.randint(self.action_dim, [1])] = 1.0
-                elif self.args.all_policy:  # TODO(yue) all policy: take all
-                    r_all = torch.ones(batch_size, self.time_steps, self.action_dim).cuda()
-                output = self.combine_logits(r_all, base_out_list, ind_list)
-                if self.args.save_meta and self.args.save_all_preds:
-                    return output.squeeze(1), r_all, torch.stack(base_out_list, dim=1)
-                else:
-                    if self.args.use_reinforce:
-                        return output.squeeze(1), r_all, r_log_prob, torch.stack(base_out_list, dim=1)
-                    else:
-                        return output.squeeze(1), r_all, None, torch.stack(base_out_list, dim=1)
-                    
+    
+
+    def amd_combine_logits(self, r, base_out):
+        # TODO r         N, T 
+        # TODO base_out  N, T, C
+        pred_tensor = base_out
+        r_tensor = r.unsqueeze(-1)
+        t_tensor = torch.sum(r, dim=[1]).unsqueeze(-1).clamp(1)  # TODO sum T, K to count frame
+        return (pred_tensor * r_tensor).sum(dim=[1]) / t_tensor
+
         
-
+        
     def combine_logits(self, r, base_out_list, ind_list):
         # TODO r                N, T, K
         # TODO base_out_list  < K * (N, T, C)

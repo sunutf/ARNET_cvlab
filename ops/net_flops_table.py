@@ -30,7 +30,6 @@ prior_dict = {
     "efficientnet-b5": (9.90, 30),
 }
 
-
 def get_gflops_params(model_name, resolution, num_classes, seg_len=-1, pretrained=True):
     if model_name in prior_dict:
         gflops, params = prior_dict[model_name]
@@ -62,9 +61,3 @@ def get_gflops_params(model_name, resolution, num_classes, seg_len=-1, pretraine
     return gflops, params
 
 
-if __name__ == "__main__":
-#     str_list = []
-#     for s in str_list:
-#         print(s)
-    
-    

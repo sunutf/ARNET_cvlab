@@ -12,6 +12,7 @@ from torch.nn.utils import clip_grad_norm_
 
 from ops.dataset import TSNDataSet
 from ops.models_ada import TSN_Ada
+from ops.models_amd import TSN_Amd
 from ops.transforms import *
 from opts import parser
 from ops import dataset_config
@@ -23,9 +24,75 @@ from ops.my_logger import Logger
 from ops.sal_rank_loss import cal_sal_rank_loss
 
 from ops.net_flops_table import get_gflops_params, feat_dim_dict
+from ops.amd_net_flops_table import amd_get_gflops_params 
 from ops.utils import get_mobv2_new_sd
 
 from os.path import join as ospj
+
+import pdb
+
+def amd_load_to_sd(model_dict, model_path, module_name, fc_name, resolution, apple_to_apple=False):
+    if ".pth" in model_path:
+        print("done loading\t%s\t(res:%3d) from\t%s" % ("%-25s" % module_name, resolution, model_path))
+        sd = torch.load(model_path)['state_dict']
+        new_version_detected = False
+        if apple_to_apple:
+            del_keys = []
+            if args.remove_all_base_0:
+                for key in sd:
+                    if "module.base_model_list.0" in key or "new_fc_list.0" in key or "linear." in key:
+                        del_keys.append(key)
+
+            if args.no_weights_from_linear:
+                for key in sd:
+                    if "linear." in key:
+                        del_keys.append(key)
+
+            for key in list(set(del_keys)):
+                del sd[key]
+
+            return sd
+
+        replace_dict = []
+        nowhere_ks = []
+        notfind_ks = []
+
+        for k, v in sd.items():  # TODO(yue) base_model->base_model_list.i
+            new_k = k.replace("base_model", module_name)
+            new_k = new_k.replace("new_fc", fc_name)
+            if new_k in model_dict:
+                replace_dict.append((k, new_k))
+            else:
+                nowhere_ks.append(k)
+        for new_k, v in model_dict.items():
+            if module_name in new_k:
+                k = new_k.replace(module_name, "base_model")
+                if k not in sd:
+                    notfind_ks.append(k)
+            if fc_name in new_k:
+                k = new_k.replace(fc_name, "new_fc")
+                if k not in sd:
+                    notfind_ks.append(k)
+        if len(nowhere_ks) != 0:
+            print("Vars not in ada network, but are in pretrained weights\n" + ("\n%s NEW  " % module_name).join(
+                nowhere_ks))
+        if len(notfind_ks) != 0:
+            print("Vars not in pretrained weights, but are needed in ada network\n" + ("\n%s LACK " % module_name).join(
+                notfind_ks))
+        for k, k_new in replace_dict:
+            sd[k_new] = sd.pop(k)
+
+        if "lite_backbone" in module_name:
+            # TODO not loading new_fc in this case, because we are using hidden_dim
+            if args.frame_independent == False:
+                del sd["module.lite_fc.weight"]
+                del sd["module.lite_fc.bias"]
+        return {k: v for k, v in sd.items() if k in model_dict}
+    else:
+        print("skip loading\t%s\t(res:%3d) from\t%s" % ("%-25s" % module_name, resolution, model_path))
+        return {}
+    
+
 
 
 def load_to_sd(model_dict, model_path, module_name, fc_name, resolution, apple_to_apple=False):
@@ -95,7 +162,7 @@ def load_to_sd(model_dict, model_path, module_name, fc_name, resolution, apple_t
     else:
         print("skip loading\t%s\t(res:%3d) from\t%s" % ("%-25s" % module_name, resolution, model_path))
         return {}
-
+    
 
 def main():
     t_start = time.time()
@@ -107,7 +174,7 @@ def main():
     )
     wandb.config.update(args)
     set_random_seed(args.random_seed)
-    use_ada_framework = args.ada_reso_skip and args.offline_lstm_last == False and args.offline_lstm_all == False and args.real_scsampler == False
+    use_ada_framework = args.ada_reso_skip or args.ada_depth_skip and args.offline_lstm_last == False and args.offline_lstm_all == False and args.real_scsampler == False
 
     if args.ablation:
         logger = None
@@ -130,9 +197,13 @@ def main():
             args.ada_crop_list = [1 for _ in args.reso_list]
 
     if use_ada_framework:
-        init_gflops_table()
+        if args.ada_reso_skip :
+            init_gflops_table()
+        elif args.ada_depth_skip:
+            amd_init_gflops_table()
 
-    model = TSN_Ada(num_class, args.num_segments,
+    if args.ada_depth_skip:
+        model = TSN_Amd(num_class, args.num_segments,
                     base_model=args.arch,
                     consensus_type=args.consensus_type,
                     dropout=args.dropout,
@@ -140,6 +211,17 @@ def main():
                     pretrain=args.pretrain,
                     fc_lr5=not (args.tune_from and args.dataset in args.tune_from),
                     args=args)
+
+    
+    else:
+        model = TSN_Ada(num_class, args.num_segments,
+                        base_model=args.arch,
+                        consensus_type=args.consensus_type,
+                        dropout=args.dropout,
+                        partial_bn=not args.no_partialbn,
+                        pretrain=args.pretrain,
+                        fc_lr5=not (args.tune_from and args.dataset in args.tune_from),
+                        args=args)
 
     crop_size = model.crop_size
     scale_size = model.scale_size
@@ -150,6 +232,7 @@ def main():
         flip=False if 'something' in args.dataset or 'jester' in args.dataset else True)
 
     model = torch.nn.DataParallel(model, device_ids=args.gpus).cuda()
+    
     # TODO(yue) freeze some params in the policy + lstm layers
     if args.freeze_policy:
         for name, param in model.module.named_parameters():
@@ -233,8 +316,41 @@ def main():
         model_dict.update(sd)
         model.load_state_dict(model_dict)
 
+        
+     # TODO(yue) ada_model loading process
+    if args.ada_depth_skip:
+        if test_mode:
+            print("Test mode load from pretrained model")
+            the_model_path = args.test_from
+            if ".pth.tar" not in the_model_path:
+                the_model_path = ospj(the_model_path, "models", "ckpt.best.pth.tar")
+            model_dict = model.state_dict()
+            sd = load_to_sd(model_dict, the_model_path, "foo", "bar", -1, apple_to_apple=True)
+            model_dict.update(sd)
+            model.load_state_dict(model_dict)
+        elif args.base_pretrained_from != "":
+            print("Adaptively load from pretrained whole")
+            model_dict = model.state_dict()
+            sd = load_to_sd(model_dict, args.base_pretrained_from, "foo", "bar", -1, apple_to_apple=True)
+
+            model_dict.update(sd)
+            model.load_state_dict(model_dict)
+
+        elif len(args.model_paths) != 0:
+            print("Adaptively load from model_path_list")
+            model_dict = model.state_dict()
+            # TODO(yue) backbones
+            for i, tmp_path in enumerate(args.model_paths):
+                base_model_index = i
+                new_i = i
+                
+                if i == 0 :
+                    sd = load_to_sd(model_dict, tmp_path, "base_model_list.%d" % base_model_index, "new_fc_list.%d" % new_i, 224)
+                
+                model_dict.update(sd)
+            model.load_state_dict(model_dict)
     # TODO(yue) ada_model loading process
-    if args.ada_reso_skip:
+    elif args.ada_reso_skip:
         if test_mode:
             print("Test mode load from pretrained model")
             the_model_path = args.test_from
@@ -269,6 +385,7 @@ def main():
                 
                 model_dict.update(sd)
             model.load_state_dict(model_dict)
+    
     else:
         if test_mode:
             the_model_path = args.test_from
@@ -434,6 +551,129 @@ def set_random_seed(the_seed):
         np.random.seed(the_seed)
         torch.manual_seed(the_seed)
 
+def amd_init_gflops_table():
+    global gflops_table
+    gflops_table = {}
+    default_gflops_table = {}
+    seg_len = -1
+    
+    """get gflops of block even it not using"""
+    default_block_list = ["conv_2", "conv_3", "conv_4", "conv_5", "base"]
+    default_case_list = ["cnn", "rnn"]
+
+    default_gflops_table[str(args.arch) + "base"] = \
+                amd_get_gflops_params(args.arch, "base", num_class, case="cnn", seg_len=seg_len)[0]
+    default_gflops_table[str(args.arch) + "base" + "fc"] = \
+                amd_get_gflops_params(args.arch, "base_fc", num_class, case="cnn", seg_len=seg_len)[0]
+    for _block in default_block_list:
+        for _case in default_case_list:
+            default_gflops_table[str(args.arch) + _block + _case] = \
+                amd_get_gflops_params(args.arch, _block, num_class, case=_case, hidden_dim = args.hidden_dim if _case is "rnn" else None, seg_len=seg_len)[0]
+            
+            
+    """add gflops of unusing block to using block"""
+    start = 0
+    for using_block in args.block_rnn_list :
+        gflops_table[str(args.arch) + using_block + "cnn"] = 0
+        index = default_block_list.index(using_block)
+        for j in range(start, index+1):
+            if j is 0:
+                gflops_table[str(args.arch) + using_block + "cnn"] = default_gflops_table[str(args.arch) + "base"]
+            gflops_table[str(args.arch) + using_block + "cnn"] += default_gflops_table[str(args.arch) + default_block_list[j] + "cnn"]
+        start = index+1
+    
+    """get gflops of all pass block"""
+    gflops_table[str(args.arch) + "all"] = 0
+    for v in default_gflops_table.values():
+        gflops_table[str(args.arch) + "all"] += v
+        
+        
+    print("gflops_table: from base to ")
+    for k in gflops_table:
+        print("%-20s: %.4f GFLOPS" % (k, gflops_table[k]))
+
+
+def amd_get_gflops_t_tt_vector():
+    gflops_vec = []
+    t_vec = []
+    tt_vec = []
+
+    if all([arch_name not in args.arch for arch_name in ["resnet", "mobilenet", "efficientnet", "res3d", "csn"]]):
+        exit("We can only handle resnet/mobilenet/efficientnet/res3d/csn as backbone, when computing FLOPS")
+
+    for using_bock in args.block_rnn_list:
+        gflops_lstm = gflops_table[str(args.arch) + str(using_block) + "rnn"]
+        the_flops = gflops_table[str(args.arch) + str(using_block) + "cnn"] + gflops_lstm
+        gflops_vec.append(the_flops)
+        t_vec.append(1.)
+        tt_vec.append(1.)
+    
+    the_flops = gflops_table[str(args.arch) + "all"]
+    gflops_vec.append(the_flops)
+    t_vec.append(1.)
+    tt_vec.append(1.)
+  
+    return gflops_vec, t_vec, tt_vec #ex : (conv_2 skip, conv_3 skip, conv_4 skip, conv_5 skip, all_pass)
+
+
+def amd_cal_eff(r):
+    each_losses = []
+    # TODO r N * T * (#which block exit, conv2/ conv_3/ conv_4/ conv_5/ all_pass)
+    gflops_vec, t_vec, tt_vec = get_gflops_t_tt_vector()
+    t_vec = torch.tensor(t_vec).cuda()
+    if args.use_gflops_loss:
+        r_loss = torch.tensor(gflops_vec).cuda()
+    else:
+        r_loss = torch.tensor([4., 2., 1., 0.5, 0.25]).cuda()[:r.shape[2]]
+
+    loss = torch.sum(torch.mean(r, dim=[0, 1]) * r_loss)
+    each_losses.append(loss.detach().cpu().item())
+
+    # TODO(yue) uniform loss
+    if args.uniform_loss_weight > 1e-5:
+#         if_policy_backbone = 1 if args.policy_also_backbone else 0
+#         num_pred = len(args.backbone_list)
+        policy_dim = len(args.block_rnn_list) + 1
+
+        reso_skip_vec = torch.zeros(policy_dim).cuda()
+
+        # TODO
+        offset = 0
+        for b_i in range(policy_dim):
+            reso_skip_vec[b_i] = torch.sum(r[:, :, b_i])
+
+        reso_skip_vec = reso_skip_vec / torch.sum(reso_skip_vec)
+        if args.uniform_cross_entropy:  # TODO cross-entropy+ logN
+            uniform_loss = torch.sum(
+                torch.tensor([x * torch.log(torch.clamp_min(x, 1e-6)) for x in reso_skip_vec])) + torch.log(
+                torch.tensor(1.0 * len(reso_skip_vec)))
+            uniform_loss = uniform_loss * args.uniform_loss_weight
+        else:  # TODO L2 norm
+            usage_bias = reso_skip_vec - torch.mean(reso_skip_vec)
+            uniform_loss = torch.norm(usage_bias, p=2) * args.uniform_loss_weight
+        loss = loss + uniform_loss
+        each_losses.append(uniform_loss.detach().cpu().item())
+
+    # TODO(yue) high-reso punish loss
+    if args.head_loss_weight > 1e-5:
+        head_usage = torch.mean(r[:, :, 0])
+        usage_threshold = 0.2
+        head_loss = (head_usage - usage_threshold) * (head_usage - usage_threshold) * args.head_loss_weight
+        loss = loss + head_loss
+        each_losses.append(head_loss.detach().cpu().item())
+
+    # TODO(yue) frames loss
+    if args.frames_loss_weight > 1e-5:
+        num_frames = torch.mean(torch.mean(r, dim=[0, 1]) * t_vec)
+        frames_loss = num_frames * num_frames * args.frames_loss_weight
+        loss = loss + frames_loss
+        each_losses.append(frames_loss.detach().cpu().item())
+
+    return loss, each_losses    
+        
+        
+        
+        
 
 def init_gflops_table():
     global gflops_table
@@ -699,7 +939,7 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
         target_var = torch.autograd.Variable(target)
 
         input = input_tuple[0]
-        if args.ada_reso_skip:
+        if args.ada_reso_skip or args.ada_depth_skip:
             input_var_list = [torch.autograd.Variable(input_item) for input_item in input_tuple[:-1 + meta_offset]]
 
             if args.real_scsampler:
