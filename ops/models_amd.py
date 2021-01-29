@@ -13,8 +13,6 @@ import math
 from .transformer import TransformerModel, PositionalEncoding
 import pdb
 
-
-
 def init_hidden(batch_size, cell_size):
     init_cell = torch.Tensor(batch_size, cell_size).zero_()
     if torch.cuda.is_available():
@@ -82,10 +80,11 @@ class TSN_Amd(nn.Module):
 
             
         if self.args.ada_depth_skip:
-            self.block_cnn_dict = nn.ModuleDict()
-            self.block_rnn_dict = nn.ModuleDict()
-            self.block_fc_dict  = nn.ModuleDict()
-            self.action_fc_dict = nn.ModuleDict()
+            self.block_cnn_dict   = nn.ModuleDict()
+            self.block_rnn_dict   = nn.ModuleDict()
+            self.block_fc_dict    = nn.ModuleDict()
+            self.action_fc_dict   = nn.ModuleDict()
+            self.pos_encoding_dict = nn.ModuleDict()
             
             self.block_rnn_list = self.args.block_rnn_list
             
@@ -95,6 +94,8 @@ class TSN_Amd(nn.Module):
 
             self._split_base_cnn_to_block(self.base_model)
             self._prepare_policy_block(self.base_model)
+            self._prepare_pos_encoding()
+            
             
         if not self.before_softmax:
             self.softmax = nn.Softmax()
@@ -134,7 +135,11 @@ class TSN_Amd(nn.Module):
         
         feat_dim = 2048   #getattr(self.base_model, 'fc').in_features
         self.new_fc = make_a_linear(feat_dim, self.num_class)
-        
+    
+    def _prepare_pos_encoding(self):
+        for name in self.block_rnn_dict.keys() :
+            feat_dim = feat_dim_of_res50_block[name]
+            self.pos_encoding_dict[name] = PositionalEncoding(feat_dim, dropout=0.1, max_len=16)
             
 
     def _prep_a_net(self, model_name, shall_pretrain):
@@ -304,9 +309,8 @@ class TSN_Amd(nn.Module):
             _base_out = new_fc(feat.view(_b * _t, -1)).view(_b, _t, -1)
         else:
             _base_out = new_fc(feat).view(_b, _t, -1)
-        feat = feat.view(_b, _t, -1)
        
-        return feat, _base_out
+        return _base_out
 
 
         
@@ -322,15 +326,18 @@ class TSN_Amd(nn.Module):
         
         r_list = []
         if name in self.block_rnn_dict.keys(): # gate activate = policy on 
-            _, base_out = self.block_fc_backbone(name, input_data, self.block_fc_dict[name])
+            base_out = self.block_fc_backbone(name, input_data, self.block_fc_dict[name])
+            base_out = self.pos_encoding_dict[name](base_out)
             
-            old_r_t = None
             old_hx = None
             batch_size = base_out.shape[0]
             hx = init_hidden(batch_size, self.args.hidden_dim)
             cx = init_hidden(batch_size, self.args.hidden_dim)
+            
 
             for t in range(self.time_steps):
+                old_r_t = candidate_list[:, t, 1].unsqueeze(-1).cuda()
+
                 if self.args.frame_independent:
                     feat_t = base_out[:, t]
                 else:
@@ -340,16 +347,17 @@ class TSN_Amd(nn.Module):
                     r_t = torch.cat(
                         [F.gumbel_softmax(p_t[b_i:b_i + 1], tau, True) for b_i in range(p_t.shape[0])])
                     
-                    if old_hx is not None:
-                        take_bool = candidate_list[:, t, 0].unsqueeze(1) < 0.5
-                        take_old = torch.tensor(take_bool, dtype=torch.float).cuda()
-                        take_curr = torch.tensor(~take_bool, dtype=torch.float).cuda()
-                        hx = old_hx * take_old + hx * take_curr
-                        r_t = old_r_t * take_old + r_t * take_curr
-                   
-                    old_r_t = r_t 
-                    old_hx = hx
+                    take_bool =  old_r_t > 0.5
+                    take_old = torch.tensor(~take_bool, dtype=torch.float).cuda()
+                    take_curr = torch.tensor(take_bool, dtype=torch.float).cuda()
+                    r_t = old_r_t * take_old + r_t * take_curr
                     r_list.append(r_t)  # TODO as decision
+
+                                      
+                    if old_hx is not None:
+                        hx = old_hx * take_old + hx * take_curr
+                    
+                    old_hx = hx
             
             r_list = torch.stack(r_list, dim=1)
 
@@ -414,6 +422,9 @@ class TSN_Amd(nn.Module):
         candidate_list = torch.ones(batch_size, self.time_steps, self.amd_action_dim) #B, T, K
         #candidate_list_log = torch.zeros(batch_size, self.time_steps, 1+len(self.args.block_rnn_list)) #B, T, K'
         candidate_log_list = []
+        take_bool = candidate_list[:,:,1] > 0.5
+        candidate_log_list.append(torch.tensor(take_bool, dtype=torch.float).cuda())
+
 
         for name in self.block_cnn_dict.keys():
             # input image tensor with 224 size
@@ -424,10 +435,9 @@ class TSN_Amd(nn.Module):
                 candidate_list = self.gate_fc_rnn_block(name, _input, kwargs["tau"], candidate_list)
 
                 take_bool = candidate_list[:,:,1] > 0.5
-                candidate_log_list.append(torch.tensor(take_bool.unsqueeze(-1), dtype=torch.float).cuda())
+                candidate_log_list.append(torch.tensor(take_bool, dtype=torch.float).cuda())
 
-
-        _, block_out = self.pass_last_fc_block('new_fc', _input)
+        block_out = self.pass_last_fc_block('new_fc', _input)
 
         output = self.amd_combine_logits(candidate_list[:,:,1], block_out)
         return output.squeeze(1), torch.stack(candidate_log_list, dim=2), None, block_out

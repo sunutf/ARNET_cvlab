@@ -574,6 +574,7 @@ def amd_init_gflops_table():
     """add gflops of unusing block to using block"""
     start = 0
     for using_block in args.block_rnn_list :
+        gflops_table[str(args.arch) + using_block + "rnn"] = default_gflops_table[str(args.arch) + using_block + "rnn"]
         gflops_table[str(args.arch) + using_block + "cnn"] = 0
         index = default_block_list.index(using_block)
         for j in range(start, index+1):
@@ -583,9 +584,7 @@ def amd_init_gflops_table():
         start = index+1
     
     """get gflops of all pass block"""
-    gflops_table[str(args.arch) + "all"] = 0
-    for v in default_gflops_table.values():
-        gflops_table[str(args.arch) + "all"] += v
+    gflops_table[str(args.arch) + "basefc"] = default_gflops_table[str(args.arch) + "basefc"] 
         
         
     print("gflops_table: from base to ")
@@ -601,14 +600,14 @@ def amd_get_gflops_t_tt_vector():
     if all([arch_name not in args.arch for arch_name in ["resnet", "mobilenet", "efficientnet", "res3d", "csn"]]):
         exit("We can only handle resnet/mobilenet/efficientnet/res3d/csn as backbone, when computing FLOPS")
 
-    for using_bock in args.block_rnn_list:
+    for using_block in args.block_rnn_list:
         gflops_lstm = gflops_table[str(args.arch) + str(using_block) + "rnn"]
         the_flops = gflops_table[str(args.arch) + str(using_block) + "cnn"] + gflops_lstm
         gflops_vec.append(the_flops)
         t_vec.append(1.)
         tt_vec.append(1.)
     
-    the_flops = gflops_table[str(args.arch) + "all"]
+    the_flops = gflops_table[str(args.arch) + "basefc"]
     gflops_vec.append(the_flops)
     t_vec.append(1.)
     tt_vec.append(1.)
@@ -618,14 +617,17 @@ def amd_get_gflops_t_tt_vector():
 
 def amd_cal_eff(r):
     each_losses = []
-    # TODO r N * T * (#which block exit, conv2/ conv_3/ conv_4/ conv_5/ all_pass)
-    gflops_vec, t_vec, tt_vec = get_gflops_t_tt_vector()
+    # TODO r N * T * (#which block exit, conv2/ conv_3/ conv_4/ conv_5/all)
+    # r_loss : pass conv_2/ conv_3/ conv_4/ conv_5/ all
+    gflops_vec, t_vec, tt_vec = amd_get_gflops_t_tt_vector()
     t_vec = torch.tensor(t_vec).cuda()
+
     if args.use_gflops_loss:
         r_loss = torch.tensor(gflops_vec).cuda()
     else:
         r_loss = torch.tensor([4., 2., 1., 0.5, 0.25]).cuda()[:r.shape[2]]
-
+    
+   
     loss = torch.sum(torch.mean(r, dim=[0, 1]) * r_loss)
     each_losses.append(loss.detach().cpu().item())
 
@@ -785,13 +787,17 @@ def cal_eff(r):
 
 def reverse_onehot(a):
     try:
-        return np.array([np.where(r > 0.5)[0][0] for r in a])
+        if args.ada_depth_skip:
+            return np.array(a.sum(axis=1), np.int32)
+        else:
+            return np.array([np.where(r > 0.5)[0][0] for r in a])
     except Exception as e:
         print("error stack:", e)
         print(a)
         for i, r in enumerate(a):
             print(i, r)
         return None
+
 
 
 def get_criterion_loss(criterion, output, target):
@@ -817,7 +823,10 @@ def compute_acc_eff_loss_with_weights(acc_loss, eff_loss, each_losses, epoch):
 
 
 def compute_every_losses(r, acc_loss, epoch):
-    eff_loss, each_losses = cal_eff(r)
+    if args.ada_depth_skip :
+        eff_loss, each_losses = amd_cal_eff(r)
+    else:
+        eff_loss, each_losses = cal_eff(r)
     acc_loss, eff_loss, each_losses = compute_acc_eff_loss_with_weights(acc_loss, eff_loss, each_losses, epoch)
     return acc_loss, eff_loss, each_losses
 
@@ -837,6 +846,50 @@ def elastic_list_print(l, limit=8):
 def compute_exp_decay_tau(epoch):
     return args.init_tau * np.exp(args.exp_decay_factor * epoch)
 
+
+
+def amd_get_policy_usage_str(r_list, act_dim):
+    gflops_vec, t_vec, tt_vec = amd_get_gflops_t_tt_vector()
+    printed_str = ""
+    rs = np.concatenate(r_list, axis=0)
+
+#     tmp_cnt = [np.sum(rs[:, :, iii] == 1) for iii in range(rs.shape[2])]
+    tmp_cnt = [np.sum(rs[:, :, iii] == 1) for iii in range(rs.shape[2])] #[#all #conv_2 #conv_3 #conv_4 #conv_5]
+
+
+    if args.all_policy:
+        tmp_total_cnt = tmp_cnt[0]
+    else:
+        tmp_total_cnt = tmp_cnt[0]
+
+    gflops = 0
+    avg_frame_ratio = 0
+    avg_pred_ratio = 0
+
+    used_model_list = []
+    reso_list = []
+
+#     for i in range(len(args.backbone_list)):
+#         used_model_list += [args.backbone_list[i]] * args.ada_crop_list[i]
+#         reso_list += [args.reso_list[i]] * args.ada_crop_list[i]
+
+    for action_i in range(rs.shape[2]):
+        if action_i is 0:
+            action_str = "pass%d (base) " % (action_i)
+        else:
+            action_str = "pass%d (%s)" % (action_i, args.block_rnn_list[action_i])
+
+        usage_ratio = tmp_cnt[action_i] / tmp_total_cnt
+        printed_str += "%-22s: %6d (%.2f%%)\n" % (action_str, tmp_cnt[action_i], 100 * usage_ratio)
+
+        gflops += usage_ratio * gflops_vec[action_i]
+        avg_frame_ratio += usage_ratio * t_vec[action_i]
+        avg_pred_ratio += usage_ratio * tt_vec[action_i]
+
+    num_clips = args.num_segments
+    printed_str += "GFLOPS: %.6f  AVG_FRAMES: %.3f  NUM_PREDS: %.3f" % (
+        gflops, avg_frame_ratio * num_clips, avg_pred_ratio * num_clips)
+    return printed_str, gflops
 
 def get_policy_usage_str(r_list, reso_dim):
     gflops_vec, t_vec, tt_vec = get_gflops_t_tt_vector()
@@ -1056,9 +1109,11 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
                         "Train Prec@5 val" : top5.val })
 
             if use_ada_framework:
+                
                 roh_r = reverse_onehot(r[-1, :, :].detach().cpu().numpy())
-                print_output += ' a {aloss.val:.4f} ({aloss.avg:.4f}) e {eloss.val:.4f} ({eloss.avg:.4f}) r {r}'.format(
-                    aloss=alosses, eloss=elosses, r=elastic_list_print(roh_r)
+                
+                print_output += ' a {aloss.val:.4f} ({aloss.avg:.4f}) e {eloss.val:.4f} ({eloss.avg:.4f}) r {r} pick {pick}'.format(
+                    aloss=alosses, eloss=elosses, r=elastic_list_print(roh_r), pick = np.count_nonzero(roh_r == 5)
                 )
                 print_output += extra_each_loss_str(each_terms)
             if args.show_pred:
@@ -1066,7 +1121,10 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
             print(print_output)
 
     if use_ada_framework:
-        usage_str, gflops = get_policy_usage_str(r_list, model.module.reso_dim)
+        if args.ada_depth_skip :
+            usage_str, gflops = amd_get_policy_usage_str(r_list, len(args.block_rnn_list)+1)
+        else:
+            usage_str, gflops = get_policy_usage_str(r_list, model.module.reso_dim)
         print(usage_str)
 
     if tf_writer is not None:
@@ -1279,8 +1337,8 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                 if use_ada_framework:
                     roh_r = reverse_onehot(r[-1, :, :].cpu().numpy())
 
-                    print_output += ' a {aloss.val:.4f} ({aloss.avg:.4f}) e {eloss.val:.4f} ({eloss.avg:.4f}) r {r}'.format(
-                        aloss=alosses, eloss=elosses, r=elastic_list_print(roh_r)
+                    print_output += ' a {aloss.val:.4f} ({aloss.avg:.4f}) e {eloss.val:.4f} ({eloss.avg:.4f}) r {r} pick {pick}'.format(
+                        aloss=alosses, eloss=elosses, r=elastic_list_print(roh_r),  pick = np.count_nonzero(roh_r == 5)
                     )
 
                     print_output += extra_each_loss_str(each_terms)
@@ -1310,7 +1368,10 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
     gflops = 0
 
     if use_ada_framework:
-        usage_str, gflops = get_policy_usage_str(r_list, model.module.reso_dim)
+        if args.ada_depth_skip :
+            usage_str, gflops = amd_get_policy_usage_str(r_list, len(args.block_rnn_list)+1)
+        else:
+            usage_str, gflops = get_policy_usage_str(r_list, model.module.reso_dim)
         print(usage_str)
 
         if args.save_meta:  # TODO save name, label, r, result
