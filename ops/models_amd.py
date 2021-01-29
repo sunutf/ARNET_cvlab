@@ -322,7 +322,7 @@ class TSN_Amd(nn.Module):
     def pass_cnn_block(self, name, input_data):
         return self.block_cnn_backbone(name, input_data, self.block_cnn_dict[name]) 
                     
-    def gate_fc_rnn_block(self, name, input_data, tau, candidate_list):
+    def gate_fc_rnn_block(self, name, input_data, candidate_list, tau):
         
         r_list = []
         if name in self.block_rnn_dict.keys(): # gate activate = policy on 
@@ -424,15 +424,16 @@ class TSN_Amd(nn.Module):
         candidate_log_list = []
         take_bool = candidate_list[:,:,1] > 0.5
         candidate_log_list.append(torch.tensor(take_bool, dtype=torch.float).cuda())
-
-
+        if "tau" not in kwargs:
+            kwargs["tau"] = None
+        tau = kwargs["tau"]
         for name in self.block_cnn_dict.keys():
             # input image tensor with 224 size
             _input = self.pass_cnn_block(name, _input) 
 
             if name is not 'base':
                 # update candidate_list based on policy rnn
-                candidate_list = self.gate_fc_rnn_block(name, _input, kwargs["tau"], candidate_list)
+                candidate_list = self.gate_fc_rnn_block(name, _input, candidate_list, tau)
 
                 take_bool = candidate_list[:,:,1] > 0.5
                 candidate_log_list.append(torch.tensor(take_bool, dtype=torch.float).cuda())

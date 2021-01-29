@@ -877,18 +877,18 @@ def amd_get_policy_usage_str(r_list, act_dim):
         if action_i is 0:
             action_str = "pass%d (base) " % (action_i)
         else:
-            action_str = "pass%d (%s)" % (action_i, args.block_rnn_list[action_i])
+            action_str = "pass%d (%s)" % (action_i, args.block_rnn_list[action_i-1])
 
         usage_ratio = tmp_cnt[action_i] / tmp_total_cnt
         printed_str += "%-22s: %6d (%.2f%%)\n" % (action_str, tmp_cnt[action_i], 100 * usage_ratio)
 
         gflops += usage_ratio * gflops_vec[action_i]
-        avg_frame_ratio += usage_ratio * t_vec[action_i]
-        avg_pred_ratio += usage_ratio * tt_vec[action_i]
+    
+    avg_frame_ratio = usage_ratio * t_vec[-1]
 
     num_clips = args.num_segments
-    printed_str += "GFLOPS: %.6f  AVG_FRAMES: %.3f  NUM_PREDS: %.3f" % (
-        gflops, avg_frame_ratio * num_clips, avg_pred_ratio * num_clips)
+    printed_str += "GFLOPS: %.6f  AVG_FRAMES: %.3f " % (
+        gflops, avg_frame_ratio * num_clips)
     return printed_str, gflops
 
 def get_policy_usage_str(r_list, reso_dim):
@@ -1191,7 +1191,7 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
             input = input_tuple[0]
 
             # compute output
-            if args.ada_reso_skip:
+            if args.ada_reso_skip or args.ada_depth_skip:
                 if args.real_scsampler:
                     output, r, real_pred, lite_pred = model(input=input_tuple[:-1 + meta_offset], tau=tau)
                     if args.sal_rank_loss:
