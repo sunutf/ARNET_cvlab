@@ -584,7 +584,14 @@ def amd_init_gflops_table():
         start = index+1
     
     """get gflops of all pass block"""
-    gflops_table[str(args.arch) + "basefc"] = default_gflops_table[str(args.arch) + "basefc"] 
+    gflops_table[str(args.arch) + "basefc"] = 0
+    for last_block in range(start, len(default_block_list)):
+        name = default_block_list[last_block]
+        if name is "base":
+            gflops_table[str(args.arch) + "basefc"] += default_gflops_table[str(args.arch) + "basefc"] 
+        else:
+            gflops_table[str(args.arch) + "basefc"] += default_gflops_table[str(args.arch) + name + "cnn"] 
+
         
         
     print("gflops_table: from base to ")
@@ -635,14 +642,14 @@ def amd_cal_eff(r):
     if args.uniform_loss_weight > 1e-5:
 #         if_policy_backbone = 1 if args.policy_also_backbone else 0
 #         num_pred = len(args.backbone_list)
-        policy_dim = len(args.block_rnn_list) + 1
+        policy_dim = len(args.block_rnn_list)
 
         reso_skip_vec = torch.zeros(policy_dim).cuda()
 
         # TODO
         offset = 0
         for b_i in range(policy_dim):
-            reso_skip_vec[b_i] = torch.sum(r[:, :, b_i])
+            reso_skip_vec[b_i] = torch.sum(r[:, :, b_i]) - torch.sum(r[:, :, b_i+1])
 
         reso_skip_vec = reso_skip_vec / torch.sum(reso_skip_vec)
         if args.uniform_cross_entropy:  # TODO cross-entropy+ logN
@@ -1330,9 +1337,7 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                     i, len(val_loader), batch_time=batch_time, loss=losses,
                     top1=top1, top5=top5))
 
-                wandb.log({"Test Loss" : losses.val,
-                        "Test Prec@1" : top1.val,
-                        "Test Prec@5" : top5.val })
+               
 
                 if use_ada_framework:
                     roh_r = reverse_onehot(r[-1, :, :].cpu().numpy())
@@ -1351,6 +1356,11 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
     print('Testing: mAP {mAP:.3f} mmAP {mmAP:.3f} Prec@1 {top1.avg:.3f} Prec@5 {top5.avg:.3f} Loss {loss.avg:.5f}'
           .format(mAP=mAP, mmAP=mmAP, top1=top1, top5=top5, loss=losses))
 
+    wandb.log({"Test Loss" : losses.avg,
+        "Test mAP" : mAP,
+        "Test Prec@1" : top1.avg,
+        "Test Prec@5" : top5.avg })
+    
     if not i_dont_need_bb:
         bbmmaps = []
         bbprec1s = []
