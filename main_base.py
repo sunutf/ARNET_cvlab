@@ -590,9 +590,7 @@ def amd_init_gflops_table():
         if name is "base":
             gflops_table[str(args.arch) + "basefc"] += default_gflops_table[str(args.arch) + "basefc"] 
         else:
-            gflops_table[str(args.arch) + "basefc"] += default_gflops_table[str(args.arch) + name + "cnn"] 
-
-        
+            gflops_table[str(args.arch) + "basefc"] += default_gflops_table[str(args.arch) + name + "cnn"]         
         
     print("gflops_table: from base to ")
     for k in gflops_table:
@@ -634,10 +632,8 @@ def amd_cal_eff(r):
     else:
         r_loss = torch.tensor([4., 2., 1., 0.5, 0.25]).cuda()[:r.shape[2]]
     
-   
     loss = torch.sum(torch.mean(r, dim=[0, 1]) * r_loss)
     each_losses.append(loss.detach().cpu().item())
-
     # TODO(yue) uniform loss
     if args.uniform_loss_weight > 1e-5:
 #         if_policy_backbone = 1 if args.policy_also_backbone else 0
@@ -652,6 +648,8 @@ def amd_cal_eff(r):
             reso_skip_vec[b_i] = torch.sum(r[:, :, b_i]) - torch.sum(r[:, :, b_i+1])
 
         reso_skip_vec = reso_skip_vec / torch.sum(reso_skip_vec)
+        reso_skip_vec = 1 - reso_skip_vec
+
         if args.uniform_cross_entropy:  # TODO cross-entropy+ logN
             uniform_loss = torch.sum(
                 torch.tensor([x * torch.log(torch.clamp_min(x, 1e-6)) for x in reso_skip_vec])) + torch.log(
@@ -890,12 +888,12 @@ def amd_get_policy_usage_str(r_list, act_dim):
         printed_str += "%-22s: %6d (%.2f%%)\n" % (action_str, tmp_cnt[action_i], 100 * usage_ratio)
 
         gflops += usage_ratio * gflops_vec[action_i]
-    
-    avg_frame_ratio = usage_ratio * t_vec[-1]
+        avg_frame_ratio += usage_ratio * t_vec[action_i]
+        avg_pred_ratio += usage_ratio * tt_vec[action_i]
 
     num_clips = args.num_segments
-    printed_str += "GFLOPS: %.6f  AVG_FRAMES: %.3f " % (
-        gflops, avg_frame_ratio * num_clips)
+    printed_str += "GFLOPS: %.6f  AVG_FRAMES: %.3f  NUM_PREDS: %.3f" % (
+        gflops, avg_frame_ratio * num_clips, avg_pred_ratio * num_clips)
     return printed_str, gflops
 
 def get_policy_usage_str(r_list, reso_dim):
@@ -1336,8 +1334,6 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                                 'Prec@5 {top5.val:.3f} ({top5.avg:.3f})\t'.format(
                     i, len(val_loader), batch_time=batch_time, loss=losses,
                     top1=top1, top5=top5))
-
-               
 
                 if use_ada_framework:
                     roh_r = reverse_onehot(r[-1, :, :].cpu().numpy())
