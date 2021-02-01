@@ -1118,7 +1118,7 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
                 roh_r = reverse_onehot(r[-1, :, :].detach().cpu().numpy())
                 
                 print_output += ' a {aloss.val:.4f} ({aloss.avg:.4f}) e {eloss.val:.4f} ({eloss.avg:.4f}) r {r} pick {pick}'.format(
-                    aloss=alosses, eloss=elosses, r=elastic_list_print(roh_r), pick = np.count_nonzero(roh_r == 5)
+                    aloss=alosses, eloss=elosses, r=elastic_list_print(roh_r), pick = np.count_nonzero(roh_r == len(args.block_rnn_list)+1)
                 )
                 print_output += extra_each_loss_str(each_terms)
             if args.show_pred:
@@ -1339,7 +1339,7 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                     roh_r = reverse_onehot(r[-1, :, :].cpu().numpy())
 
                     print_output += ' a {aloss.val:.4f} ({aloss.avg:.4f}) e {eloss.val:.4f} ({eloss.avg:.4f}) r {r} pick {pick}'.format(
-                        aloss=alosses, eloss=elosses, r=elastic_list_print(roh_r),  pick = np.count_nonzero(roh_r == 5)
+                        aloss=alosses, eloss=elosses, r=elastic_list_print(roh_r),  pick = np.count_nonzero(roh_r == len(args.block_rnn_list)+1)
                     )
 
                     print_output += extra_each_loss_str(each_terms)
