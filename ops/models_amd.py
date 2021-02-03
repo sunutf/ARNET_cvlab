@@ -420,8 +420,9 @@ class TSN_Amd(nn.Module):
         input_list = kwargs["input"]
         batch_size = input_list[0].shape[0]  # TODO(yue) input[0] B*(TC)*H*W
         _input = input_list[0]
-        candidate_list = torch.ones(batch_size, self.time_steps, self.amd_action_dim) #B, T, K
-        #candidate_list_log = torch.zeros(batch_size, self.time_steps, 1+len(self.args.block_rnn_list)) #B, T, K'
+        candidate_list = torch.zeros(batch_size, self.time_steps, 1)
+        candidate_list = torch.cat([torch.zeros(batch_size, self.time_steps, 1), torch.ones(batch_size, self.time_steps, 1)], 2) #B, T, K
+
         candidate_log_list = []
         take_bool = candidate_list[:,:,1] > 0.5
         candidate_log_list.append(torch.tensor(take_bool, dtype=torch.float).cuda())

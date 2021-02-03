@@ -169,7 +169,7 @@ def main():
     global args, best_prec1, num_class, use_ada_framework  # , model
     wandb.init(
         project="arnet-reproduce",
-        name="AMD_"+"aff"+ args.accuracy_weight + "_eff"+ args.efficency_weight + "_b"+ args.batch-size + "-" + args.pe_at_rnn,
+        name="AMD "+"aff"+ str(args.accuracy_weight) + " eff"+ str(args.efficency_weight) + " r_l"+" b"+ str(args.batch_size) + "-" + str(args.pe_at_rnn),
         entity="video_channel"
     )
     wandb.config.update(args)
@@ -621,6 +621,15 @@ def amd_get_gflops_t_tt_vector():
   
     return gflops_vec, t_vec, tt_vec #ex : (conv_2 skip, conv_3 skip, conv_4 skip, conv_5 skip, all_pass)
 
+def amd_cal_route(r):
+    if args.routing_weight > 1e-5:
+        route_target = r[:,:,-1].unsqueeze(-1)
+        route_target = route_target.expand(-1, -1, 5)
+        pos_weight = torch.full([r.shape[2]], 100)  # All weights are equal to 1
+        route_criterion = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight).cuda()
+        return route_criterion(r, route_target)
+    else:
+        return 0
 
 def amd_cal_eff(r):
     each_losses = []
@@ -637,6 +646,8 @@ def amd_cal_eff(r):
    
     loss = torch.sum(torch.mean(r, dim=[0, 1]) * r_loss)
     each_losses.append(loss.detach().cpu().item())
+    
+    
 
     # TODO(yue) uniform loss
     if args.uniform_loss_weight > 1e-5:
@@ -820,23 +831,27 @@ def kl_categorical(p_logit, q_logit):
     return torch.mean(_kl)
 
 
-def compute_acc_eff_loss_with_weights(acc_loss, eff_loss, each_losses, epoch):
+def compute_acc_eff_loss_with_weights(acc_loss, eff_loss, routing_loss, each_losses, epoch):
     if epoch > args.eff_loss_after:
         acc_weight = args.accuracy_weight
         eff_weight = args.efficency_weight
+        route_weight = args.routing_weight
     else:
         acc_weight = 1.0
         eff_weight = 0.0
-    return acc_loss * acc_weight, eff_loss * eff_weight, [x * eff_weight for x in each_losses]
+        route_weight = 0.0
+    return acc_loss * acc_weight, eff_loss * eff_weight, routing_loss * route_weight,[x * eff_weight for x in each_losses]
 
 
 def compute_every_losses(r, acc_loss, epoch):
+    routing_loss = 0
     if args.ada_depth_skip :
         eff_loss, each_losses = amd_cal_eff(r)
+        routing_loss = amd_cal_route(r)
     else:
         eff_loss, each_losses = cal_eff(r)
-    acc_loss, eff_loss, each_losses = compute_acc_eff_loss_with_weights(acc_loss, eff_loss, each_losses, epoch)
-    return acc_loss, eff_loss, each_losses
+    acc_loss, eff_loss, routing_loss, each_losses = compute_acc_eff_loss_with_weights(acc_loss, eff_loss, routing_loss, each_losses, epoch)
+    return acc_loss, eff_loss, routing_loss, each_losses
 
 
 def elastic_list_print(l, limit=8):
@@ -1018,7 +1033,7 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
                     acc_loss = get_criterion_loss(criterion, output, target_var)
 
             if use_ada_framework:
-                acc_loss, eff_loss, each_losses = compute_every_losses(r, acc_loss, epoch)
+                acc_loss, eff_loss, routing_loss, each_losses = compute_every_losses(r, acc_loss, epoch)
 
                 if args.use_reinforce and not args.freeze_policy:
                     if args.separated:
@@ -1027,7 +1042,7 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
 
                         for b_i in range(output.shape[0]):
                             acc_loss_item = get_criterion_loss(criterion, output[b_i:b_i + 1], target_var[b_i:b_i + 1])
-                            acc_loss_item, eff_loss_item, each_losses_item = compute_every_losses(r[b_i:b_i + 1],
+                            acc_loss_item, eff_loss_item, routing_loss, each_losses_item = compute_every_losses(r[b_i:b_i + 1],
                                                                                                   acc_loss_item, epoch)
 
                             acc_loss_items.append(acc_loss_item)
@@ -1218,7 +1233,7 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                             output, r, feat_outs, base_outs = model(input=input_tuple[:-1 + meta_offset], tau=tau)
                             acc_loss = get_criterion_loss(criterion, output, target)
                 if use_ada_framework:
-                    acc_loss, eff_loss, each_losses = compute_every_losses(r, acc_loss, epoch)
+                    acc_loss, eff_loss, routing_loss, each_losses = compute_every_losses(r, acc_loss, epoch)
 
                     if args.use_reinforce and not args.freeze_policy:
                         if args.separated:
@@ -1227,7 +1242,7 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                             for b_i in range(output.shape[0]):
                                 acc_loss_item = get_criterion_loss(criterion, output[b_i:b_i + 1],
                                                                    target[b_i:b_i + 1])
-                                acc_loss_item, eff_loss_item, each_losses_item = compute_every_losses(r[b_i:b_i + 1],
+                                acc_loss_item, eff_loss_item, routing_loss_item, each_losses_item = compute_every_losses(r[b_i:b_i + 1],
                                                                                                       acc_loss_item,
                                                                                                       epoch)
                                 acc_loss_items.append(acc_loss_item)

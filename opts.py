@@ -78,6 +78,7 @@ parser.add_argument('--efficency_weight', default=0., type=float)
 parser.add_argument('--show_pred', action='store_true')
 
 # adaptive depth skipping(jhseon)
+parser.add_argument('--routing_weight', default=0., type=float)
 parser.add_argument('--ada_depth_skip', action='store_true', help='adaptively select depth of model')
 parser.add_argument('--block_rnn_list', default=['conv_2'], type=str, nargs=
                     '+', help='adaptively select depth of model')
