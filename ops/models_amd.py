@@ -95,10 +95,6 @@ class TSN_Amd(nn.Module):
             self._split_base_cnn_to_block(self.base_model)
             self._prepare_policy_block(self.base_model)
             self._prepare_pos_encoding()
-            if self.args.freeze_backbone:
-                for name in self.block_cnn_dict.keys():
-                    self.block_cnn_dict[name].detach()
-            
             
         if not self.before_softmax:
             self.softmax = nn.Softmax()
@@ -323,6 +319,11 @@ class TSN_Amd(nn.Module):
     ex: depend on conv_name
     """
     def pass_cnn_block(self, name, input_data):
+        if self.args.amd_freeze_backbone:
+            with torch.no_grad():
+                return self.block_cnn_backbone(name, input_data, self.block_cnn_dict[name]) 
+
+
         return self.block_cnn_backbone(name, input_data, self.block_cnn_dict[name]) 
                     
     def gate_fc_rnn_block(self, name, input_data, candidate_list, tau):
