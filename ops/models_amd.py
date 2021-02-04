@@ -19,24 +19,7 @@ def init_hidden(batch_size, cell_size):
         init_cell = init_cell.cuda()
     return init_cell
 
-# class FramePositionalEncoding(nn.Module):
 
-#     def __init__(self, d_model, dropout=0.1, max_len=5000):
-#         super(PositionalEncoding, self).__init__()
-#         self.dropout = nn.Dropout(p=dropout)
-
-#         pe = torch.zeros(max_len, d_model)
-#         position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-#         div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
-#         pe[:, 0::2] = torch.sin(position * div_term)
-#         pe[:, 1::2] = torch.cos(position * div_term)
-#         pe = pe.unsqueeze(0).transpose(0, 1)
-#         self.register_buffer('pe', pe)
-
-#     def forward(self, x):
-#         x = x + self.pe[:x.size(0)].squeeze
-#         return self.dropout(x)
-    
 class SqueezeTwice(torch.nn.Module):
     def forward(self, x):
         return x.squeeze(-1).squeeze(-1)
@@ -89,8 +72,6 @@ class TSN_Amd(nn.Module):
             self.block_rnn_list = self.args.block_rnn_list
             
             self.amd_action_dim = 2 #0 , 1 (skip(0) or pass(1))
-
-#             self.frame_pos_encoder = FramePositionalEncoding(d_model=self.args.hidden_dim, max_len=self.time_steps) 
 
             self._split_base_cnn_to_block(self.base_model)
             self._prepare_policy_block(self.base_model)
@@ -351,10 +332,11 @@ class TSN_Amd(nn.Module):
                     feat_t = hx
                     p_t = torch.log(F.softmax(self.action_fc_dict[name](feat_t), dim=1).clamp(min=1e-8))
                     r_t = torch.cat(
-                        [F.gumbel_softmax(p_t[b_i:b_i + 1], tau, True) for b_i in range(p_t.shape[0])])
-                    
+                        [F.gumbel_softmax(p_t[b_i:b_i + 1], tau, False) for b_i in range(p_t.shape[0])])
                     raw_r_list.append(r_t)
                     
+                    r_t = torch.cat(
+                        [F.gumbel_softmax(p_t[b_i:b_i + 1], tau, True) for b_i in range(p_t.shape[0])])
                     take_bool =  old_r_t > 0.5
                     take_old = torch.tensor(~take_bool, dtype=torch.float).cuda()
                     take_curr = torch.tensor(take_bool, dtype=torch.float).cuda()

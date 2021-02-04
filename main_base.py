@@ -623,7 +623,7 @@ def amd_get_gflops_t_tt_vector():
 
 def amd_cal_route(raw_r):
     #raw_r : B, T, K, 2
-    reweight = torch.tensor([100, 1], dtype=torch.float32).cuda() # skip, pass
+    reweight = torch.tensor([10, 1]).cuda() # skip, pass
     reweight = reweight.repeat(raw_r.shape[0], raw_r.shape[1], 1) # B, T, 2
     r_loss = 0
     if args.routing_weight > 1e-5:
@@ -631,7 +631,8 @@ def amd_cal_route(raw_r):
         # B, T ,2
         route_target = torch.tensor((raw_r[:,:,-1].detach() > 0.5), dtype=torch.float).cuda()
         for k_i in range(raw_r.shape[2]-1):
-            r_loss += torch.sum(raw_r[:,:,k_i,:] * route_target * reweight)
+            r_loss -= torch.sum(torch.log(raw_r[:,:,k_i,:]) * route_target * reweight)
+    
     return r_loss
 
 def amd_cal_eff(r):
