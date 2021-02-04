@@ -621,15 +621,19 @@ def amd_get_gflops_t_tt_vector():
   
     return gflops_vec, t_vec, tt_vec #ex : (conv_2 skip, conv_3 skip, conv_4 skip, conv_5 skip, all_pass)
 
-def amd_cal_route(r):
+def amd_cal_route(raw_r):
+    #raw_r : B, T, K, 2
+    reweight = torch.tensor([100, 1]).cuda() # skip, pass
+    reweight = reweight.repeat(raw_r.shape[0], raw_r.shape[1], 1) # B, T, 2
+    r_loss = 0
     if args.routing_weight > 1e-5:
-        route_target = r[:,:,-1].unsqueeze(-1)
-        route_target = route_target.expand(-1, -1, 5)
-        pos_weight = torch.full([r.shape[2]], 100)  # All weights are equal to 1
-        route_criterion = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight).cuda()
-        return route_criterion(r, route_target)
-    else:
-        return 0
+        
+        # B, T ,2
+        route_target = torch.tensor((raw_r[:,:,-1].detach() > 0.5), dtype=torch.float).cuda()
+        for k_i in range(raw_r.shape[2]-1):
+            r_loss += torch.sum(raw_r[:,:,k_i,:] * route_target * reweight)
+    
+    return r_loss
 
 def amd_cal_eff(r):
     each_losses = []
@@ -843,11 +847,11 @@ def compute_acc_eff_loss_with_weights(acc_loss, eff_loss, routing_loss, each_los
     return acc_loss * acc_weight, eff_loss * eff_weight, routing_loss * route_weight,[x * eff_weight for x in each_losses]
 
 
-def compute_every_losses(r, acc_loss, epoch):
+def compute_every_losses(r, raw_r, acc_loss, epoch):
     routing_loss = 0
     if args.ada_depth_skip :
         eff_loss, each_losses = amd_cal_eff(r)
-        routing_loss = amd_cal_route(r)
+        routing_loss = amd_cal_route(raw_r)
     else:
         eff_loss, each_losses = cal_eff(r)
     acc_loss, eff_loss, routing_loss, each_losses = compute_acc_eff_loss_with_weights(acc_loss, eff_loss, routing_loss, each_losses, epoch)
@@ -993,7 +997,7 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
     tau = 0
     if use_ada_framework:
         tau = get_current_temperature(epoch)
-        alosses, elosses = get_average_meters(2)
+        alosses, elosses, rlosses = get_average_meters(3)
         each_terms = get_average_meters(NUM_LOSSES)
         r_list = []
 
@@ -1019,21 +1023,21 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
             input_var_list = [torch.autograd.Variable(input_item) for input_item in input_tuple[:-1 + meta_offset]]
 
             if args.real_scsampler:
-                output, r, real_pred, lite_pred = model(input=input_var_list, tau=tau)
+                output, r, raw_r, real_pred, lite_pred = model(input=input_var_list, tau=tau)
                 if args.sal_rank_loss:
                     acc_loss = cal_sal_rank_loss(real_pred, lite_pred, target_var)
                 else:
                     acc_loss = get_criterion_loss(criterion, lite_pred.mean(dim=1), target_var)
             else:
                 if args.use_reinforce:
-                    output, r, r_log_prob, base_outs = model(input=input_var_list, tau=tau)
+                    output, r, raw_r, r_log_prob, base_outs = model(input=input_var_list, tau=tau)
                     acc_loss = get_criterion_loss(criterion, output, target_var)
                 else:
-                    output, r, feat_outs, base_outs = model(input=input_var_list, tau=tau)
+                    output, r, raw_r, feat_outs, base_outs = model(input=input_var_list, tau=tau)
                     acc_loss = get_criterion_loss(criterion, output, target_var)
 
             if use_ada_framework:
-                acc_loss, eff_loss, routing_loss, each_losses = compute_every_losses(r, acc_loss, epoch)
+                acc_loss, eff_loss, routing_loss, each_losses = compute_every_losses(r, raw_r, acc_loss, epoch)
 
                 if args.use_reinforce and not args.freeze_policy:
                     if args.separated:
@@ -1042,8 +1046,8 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
 
                         for b_i in range(output.shape[0]):
                             acc_loss_item = get_criterion_loss(criterion, output[b_i:b_i + 1], target_var[b_i:b_i + 1])
-                            acc_loss_item, eff_loss_item, routing_loss, each_losses_item = compute_every_losses(r[b_i:b_i + 1],
-                                                                                                  acc_loss_item, epoch)
+                            acc_loss_item, eff_loss_item, routing_loss_item, each_losses_item = compute_every_losses(r[b_i:b_i + 1],
+                                                                                                  raw_r[b_i:b_i+1], acc_loss_item, epoch)
 
                             acc_loss_items.append(acc_loss_item)
                             eff_loss_items.append(eff_loss_item)
@@ -1082,10 +1086,12 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
 
                 alosses.update(acc_loss.item(), input.size(0))
                 elosses.update(eff_loss.item(), input.size(0))
+                rlosses.update(routing_loss.item(), input.size(0))
+                
 
                 for l_i, each_loss in enumerate(each_losses):
                     each_terms[l_i].update(each_loss, input.size(0))
-                loss = acc_loss + eff_loss
+                loss = acc_loss + eff_loss + routing_loss
             else:
                 loss = acc_loss
         else:
@@ -1135,8 +1141,8 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
                 
                 roh_r = reverse_onehot(r[-1, :, :].detach().cpu().numpy())
                 
-                print_output += ' a {aloss.val:.4f} ({aloss.avg:.4f}) e {eloss.val:.4f} ({eloss.avg:.4f}) r {r} pick {pick}'.format(
-                    aloss=alosses, eloss=elosses, r=elastic_list_print(roh_r), pick = np.count_nonzero(roh_r == 5)
+                print_output += 'a_l {aloss.val:.4f} ({aloss.avg:.4f})\t e_l {eloss.val:.4f} ({eloss.avg:.4f})\t r_l {rloss.val:.4f} ({rloss.avg:.4f})\t r {r} pick {pick}'.format(
+                    aloss=alosses, eloss=elosses, rloss=rlosses, r=elastic_list_print(roh_r), pick = np.count_nonzero(roh_r == 5)
                 )
                 print_output += extra_each_loss_str(each_terms)
             if args.show_pred:
@@ -1185,7 +1191,7 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
 
     if use_ada_framework:
         tau = get_current_temperature(epoch)
-        alosses, elosses = get_average_meters(2)
+        alosses, elosses, rlosses = get_average_meters(3)
 
         iter_list = args.backbone_list
 
@@ -1216,24 +1222,24 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
             # compute output
             if args.ada_reso_skip or args.ada_depth_skip:
                 if args.real_scsampler:
-                    output, r, real_pred, lite_pred = model(input=input_tuple[:-1 + meta_offset], tau=tau)
+                    output, r, raw_r, real_pred, lite_pred = model(input=input_tuple[:-1 + meta_offset], tau=tau)
                     if args.sal_rank_loss:
                         acc_loss = cal_sal_rank_loss(real_pred, lite_pred, target)
                     else:
                         acc_loss = get_criterion_loss(criterion, lite_pred.mean(dim=1), target)
                 else:
                     if args.save_meta and args.save_all_preds:
-                        output, r, all_preds = model(input=input_tuple[:-1 + meta_offset], tau=tau)
+                        output, r, raw_r, all_preds = model(input=input_tuple[:-1 + meta_offset], tau=tau)
                         acc_loss = get_criterion_loss(criterion, output, target)
                     else:
                         if args.use_reinforce:
-                            output, r, r_log_prob, base_outs = model(input=input_tuple[:-1 + meta_offset], tau=tau)
+                            output, r, raw_r, r_log_prob, base_outs = model(input=input_tuple[:-1 + meta_offset], tau=tau)
                             acc_loss = get_criterion_loss(criterion, output, target)
                         else:
-                            output, r, feat_outs, base_outs = model(input=input_tuple[:-1 + meta_offset], tau=tau)
+                            output, r, raw_r, feat_outs, base_outs = model(input=input_tuple[:-1 + meta_offset], tau=tau)
                             acc_loss = get_criterion_loss(criterion, output, target)
                 if use_ada_framework:
-                    acc_loss, eff_loss, routing_loss, each_losses = compute_every_losses(r, acc_loss, epoch)
+                    acc_loss, eff_loss, routing_loss, each_losses = compute_every_losses(r, raw_r, acc_loss, epoch)
 
                     if args.use_reinforce and not args.freeze_policy:
                         if args.separated:
@@ -1243,7 +1249,7 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                                 acc_loss_item = get_criterion_loss(criterion, output[b_i:b_i + 1],
                                                                    target[b_i:b_i + 1])
                                 acc_loss_item, eff_loss_item, routing_loss_item, each_losses_item = compute_every_losses(r[b_i:b_i + 1],
-                                                                                                      acc_loss_item,
+                                                                                                      raw_r[b_i:b_i+1], acc_loss_item,
                                                                                                       epoch)
                                 acc_loss_items.append(acc_loss_item)
                                 eff_loss_items.append(eff_loss_item)
@@ -1272,9 +1278,10 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
 
                     alosses.update(acc_loss.item(), input.size(0))
                     elosses.update(eff_loss.item(), input.size(0))
+                    rlosses.update(routing_loss.item(), input.size(0))
                     for l_i, each_loss in enumerate(each_losses):
                         each_terms[l_i].update(each_loss, input.size(0))
-                    loss = acc_loss + eff_loss
+                    loss = acc_loss + eff_loss + routing_loss
                 else:
                     loss = acc_loss
             else:
@@ -1358,8 +1365,8 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                 if use_ada_framework:
                     roh_r = reverse_onehot(r[-1, :, :].cpu().numpy())
 
-                    print_output += ' a {aloss.val:.4f} ({aloss.avg:.4f}) e {eloss.val:.4f} ({eloss.avg:.4f}) r {r} pick {pick}'.format(
-                        aloss=alosses, eloss=elosses, r=elastic_list_print(roh_r),  pick = np.count_nonzero(roh_r == 5)
+                    print_output += 'a_l {aloss.val:.4f} ({aloss.avg:.4f})\t e_l {eloss.val:.4f} ({eloss.avg:.4f})\t r_l {rloss.val:.4f} ({rloss.avg:.4f})\t r {r} pick {pick}'.format(
+                    aloss=alosses, eloss=elosses, rloss=rlosses, r=elastic_list_print(roh_r), pick = np.count_nonzero(roh_r == 5)
                     )
 
                     print_output += extra_each_loss_str(each_terms)

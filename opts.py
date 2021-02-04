@@ -83,6 +83,8 @@ parser.add_argument('--ada_depth_skip', action='store_true', help='adaptively se
 parser.add_argument('--block_rnn_list', default=['conv_2'], type=str, nargs=
                     '+', help='adaptively select depth of model')
 parser.add_argument('--pe_at_rnn', action='store_true', help='position encoding activate at rnn')
+parser.add_argument('--freeze_backbone', action='store_true', help='freeze backbone')
+
 
 # TODO(yue) multi-label cases (for activity-net-v1.3)
 # Always provides (single + multi) mAPs. Difference is only in training

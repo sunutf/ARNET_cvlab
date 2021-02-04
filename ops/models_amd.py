@@ -95,6 +95,9 @@ class TSN_Amd(nn.Module):
             self._split_base_cnn_to_block(self.base_model)
             self._prepare_policy_block(self.base_model)
             self._prepare_pos_encoding()
+            if self.args.freeze_backbone:
+                for name in self.block_cnn_dict.keys():
+                    self.block_cnn_dict[name].detach()
             
             
         if not self.before_softmax:
@@ -325,6 +328,7 @@ class TSN_Amd(nn.Module):
     def gate_fc_rnn_block(self, name, input_data, candidate_list, tau):
         
         r_list = []
+        raw_r_list = []
         if name in self.block_rnn_dict.keys(): # gate activate = policy on 
             base_out = self.block_fc_backbone(name, input_data, self.block_fc_dict[name])
             if self.args.pe_at_rnn:
@@ -348,6 +352,8 @@ class TSN_Amd(nn.Module):
                     r_t = torch.cat(
                         [F.gumbel_softmax(p_t[b_i:b_i + 1], tau, True) for b_i in range(p_t.shape[0])])
                     
+                    raw_r_list.append(r_t)
+                    
                     take_bool =  old_r_t > 0.5
                     take_old = torch.tensor(~take_bool, dtype=torch.float).cuda()
                     take_curr = torch.tensor(take_bool, dtype=torch.float).cuda()
@@ -361,8 +367,9 @@ class TSN_Amd(nn.Module):
                     old_hx = hx
             
             r_list = torch.stack(r_list, dim=1)
+            raw_r_list = torch.stack(raw_r_list, dim=1)
 
-        return r_list
+        return raw_r_list, r_list
     
     def pass_last_fc_block(self, name, input_data):
         avgpool = torch.nn.AdaptiveAvgPool2d(output_size=(1, 1))
@@ -424,6 +431,7 @@ class TSN_Amd(nn.Module):
         candidate_list = torch.cat([torch.zeros(batch_size, self.time_steps, 1), torch.ones(batch_size, self.time_steps, 1)], 2) #B, T, K
 
         candidate_log_list = []
+        raw_r_list = []
         take_bool = candidate_list[:,:,1] > 0.5
         candidate_log_list.append(torch.tensor(take_bool, dtype=torch.float).cuda())
         if "tau" not in kwargs:
@@ -435,15 +443,17 @@ class TSN_Amd(nn.Module):
 
             if name is not 'base':
                 # update candidate_list based on policy rnn
-                candidate_list = self.gate_fc_rnn_block(name, _input, candidate_list, tau)
+                raw_r, candidate_list = self.gate_fc_rnn_block(name, _input, candidate_list, tau)
 
-                take_bool = candidate_list[:,:,1] > 0.5
-                candidate_log_list.append(torch.tensor(take_bool, dtype=torch.float).cuda())
+#                 take_bool = candidate_list[:,:,1] > 0.5
+#                 candidate_log_list.append(torch.tensor(take_bool, dtype=torch.float).cuda())
+                candidate_log_list.append(candidate_list[:,:,1])
+                raw_r_list.append(raw_r)
 
         block_out = self.pass_last_fc_block('new_fc', _input)
 
         output = self.amd_combine_logits(candidate_list[:,:,1], block_out)
-        return output.squeeze(1), torch.stack(candidate_log_list, dim=2), None, block_out
+        return output.squeeze(1), torch.stack(candidate_log_list, dim=2), torch.stack(raw_r_list, dim=2), None, block_out
 
     
 
