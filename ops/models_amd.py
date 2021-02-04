@@ -355,10 +355,18 @@ class TSN_Amd(nn.Module):
         return raw_r_list, r_list
     
     def pass_last_fc_block(self, name, input_data):
+        if self.args.amd_freeze_backbone:
+            with torch.no_grad():
+                avgpool = torch.nn.AdaptiveAvgPool2d(output_size=(1, 1))
+                input_data = avgpool(input_data)
+                input_data = torch.nn.Dropout(p=self.dropout)(input_data).squeeze(-1).squeeze(-1)
+                return self.block_fc_backbone(name, input_data, self.new_fc) 
+        
         avgpool = torch.nn.AdaptiveAvgPool2d(output_size=(1, 1))
         input_data = avgpool(input_data)
         input_data = torch.nn.Dropout(p=self.dropout)(input_data).squeeze(-1).squeeze(-1)
         return self.block_fc_backbone(name, input_data, self.new_fc) 
+                   
                    
     
     def using_online_policy(self):
