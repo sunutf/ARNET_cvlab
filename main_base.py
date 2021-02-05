@@ -35,7 +35,10 @@ def amd_load_to_sd(model_dict, model_path, module_name, fc_name, resolution, app
     if ".pth" in model_path:
         print("done loading\t%s\t(res:%3d) from\t%s" % ("%-25s" % module_name, resolution, model_path))
         sd = torch.load(model_path)['state_dict']
-        new_version_detected = False
+        if "module.block_cnn_dict.base.1.bias" in sd:
+            print("Directly upload")
+            return sd
+        
         if apple_to_apple:
             del_keys = []
             if args.remove_all_base_0:
@@ -320,24 +323,24 @@ def main():
      # TODO(yue) ada_model loading process
     if args.ada_depth_skip:
         if test_mode:
-            print("Test mode load from pretrained model")
+            print("Test mode load from pretrained model AMD")
             the_model_path = args.test_from
             if ".pth.tar" not in the_model_path:
                 the_model_path = ospj(the_model_path, "models", "ckpt.best.pth.tar")
             model_dict = model.state_dict()
-            sd = load_to_sd(model_dict, the_model_path, "foo", "bar", -1, apple_to_apple=True)
+            sd = amd_load_to_sd(model_dict, the_model_path, "foo", "bar", -1, apple_to_apple=True)
             model_dict.update(sd)
             model.load_state_dict(model_dict)
         elif args.base_pretrained_from != "":
-            print("Adaptively load from pretrained whole")
+            print("Adaptively load from pretrained whole AMD")
             model_dict = model.state_dict()
-            sd = load_to_sd(model_dict, args.base_pretrained_from, "foo", "bar", -1, apple_to_apple=True)
+            sd = amd_load_to_sd(model_dict, args.base_pretrained_from, "foo", "bar", -1, apple_to_apple=True)
 
             model_dict.update(sd)
             model.load_state_dict(model_dict)
 
         elif len(args.model_paths) != 0:
-            print("Adaptively load from model_path_list")
+            print("Adaptively load from model_path_list AMD")
             model_dict = model.state_dict()
             # TODO(yue) backbones
             for i, tmp_path in enumerate(args.model_paths):
@@ -345,7 +348,7 @@ def main():
                 new_i = i
                 
                 if i == 0 :
-                    sd = load_to_sd(model_dict, tmp_path, "base_model_list.%d" % base_model_index, "new_fc_list.%d" % new_i, 224)
+                    sd = amd_load_to_sd(model_dict, tmp_path, "base_model_list.%d" % base_model_index, "new_fc_list.%d" % new_i, 224)
                 
                 model_dict.update(sd)
             model.load_state_dict(model_dict)
@@ -625,11 +628,15 @@ def amd_cal_route(raw_r):
     #raw_r : B, T, K, 2
     reweight = torch.tensor([10, 1]).cuda() # skip, pass
     reweight = reweight.repeat(raw_r.shape[0], raw_r.shape[1], 1) # B, T, 2
-    r_loss = 0
+    r_loss = torch.tensor(0, dtype=torch.float).cuda()
     if args.routing_weight > 1e-5:
         
         # B, T ,2
         route_target = torch.tensor((raw_r[:,:,-1].detach() > 0.5), dtype=torch.float).cuda()
+#         route_target_list.append(route_target)
+#         for k_i in reversed(range(raw_r.shape[2]-1),1):
+#             route_target = route_target * torch.tensor((raw_r[:,:,k_i] > 0.5), dtype=torch.float).cuda()
+#             route_target_list.append(route_target)
         for k_i in range(raw_r.shape[2]-1):
             r_loss -= torch.sum(torch.log(raw_r[:,:,k_i,:]) * route_target * reweight)
     
