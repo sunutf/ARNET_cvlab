@@ -629,16 +629,13 @@ def amd_cal_route(raw_r):
     reweight = torch.tensor([10, 1]).cuda() # skip, pass
     reweight = reweight.repeat(raw_r.shape[0], raw_r.shape[1], 1) # B, T, 2
     r_loss = torch.tensor(0, dtype=torch.float).cuda()
-    if args.routing_weight > 1e-5:
+    if args.routing_weight > 1e-6:
         
         # B, T ,2
-        route_target = torch.tensor((raw_r[:,:,-1].detach() > 0.5), dtype=torch.float).cuda()
-#         route_target_list.append(route_target)
-#         for k_i in reversed(range(raw_r.shape[2]-1),1):
-#             route_target = route_target * torch.tensor((raw_r[:,:,k_i] > 0.5), dtype=torch.float).cuda()
-#             route_target_list.append(route_target)
-        for k_i in range(raw_r.shape[2]-1):
+        route_target = torch.tensor((raw_r[:,:,-1] > 0.5), dtype=torch.float).cuda()
+        for k_i in range(raw_r.shape[2]-1,-1,-1):
             r_loss -= torch.sum(torch.log(raw_r[:,:,k_i,:]) * route_target * reweight)
+            route_target *= torch.tensor((raw_r[:,:,k_i] > 0.5), dtype=torch.float).cuda()
     
     return r_loss
 
