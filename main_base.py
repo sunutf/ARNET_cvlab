@@ -172,7 +172,7 @@ def main():
     global args, best_prec1, num_class, use_ada_framework  # , model
     wandb.init(
         project="arnet-reproduce",
-        name="AMD "+"aff"+ str(args.accuracy_weight) + " eff"+ str(args.efficency_weight) + " r_l"+" b"+ str(args.batch_size) + "-" + str(args.pe_at_rnn),
+        name="AMD "+"aff"+ str(args.accuracy_weight) + " eff"+ str(args.efficency_weight) + " r_l"+ str(args.routing_weight) +" b"+ str(args.batch_size) + "-" + str(args.pe_at_rnn),
         entity="video_channel"
     )
     wandb.config.update(args)
@@ -626,16 +626,23 @@ def amd_get_gflops_t_tt_vector():
 
 def amd_cal_route(raw_r):
     #raw_r : B, T, K, 2
-    reweight = torch.tensor([10, 1]).cuda() # skip, pass
+    reweight = torch.tensor([100, 1]).cuda() # skip, pass
     reweight = reweight.repeat(raw_r.shape[0], raw_r.shape[1], 1) # B, T, 2
     r_loss = torch.tensor(0, dtype=torch.float).cuda()
     if args.routing_weight > 1e-6:
         
         # B, T ,2
-        route_target = torch.tensor((raw_r[:,:,-1] > 0.5), dtype=torch.float).cuda()
-        for k_i in range(raw_r.shape[2]-1,-1,-1):
+        route_target = torch.tensor((raw_r[:,:,-1].detach() > 0.5), dtype=torch.float).cuda()
+        for k_i in range(raw_r.shape[2]-1):
             r_loss -= torch.sum(torch.log(raw_r[:,:,k_i,:]) * route_target * reweight)
-            route_target *= torch.tensor((raw_r[:,:,k_i] > 0.5), dtype=torch.float).cuda()
+    
+        
+#         route_target = torch.tensor((raw_r[:,:,-1].detach() > 0.5), dtype=torch.float).cuda()
+#         for k_i in range(raw_r.shape[2]-1,-1,-1):
+#             r_loss -= torch.sum(torch.log(raw_r[:,:,k_i,:]) * route_target * reweight)
+            
+#             take_bool = raw_r[:,:,k_i] > 0.5
+#             route_target = route_target.clone() * torch.tensor(take_bool, dtype=torch.float).cuda()
     
     return r_loss
 

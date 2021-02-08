@@ -436,9 +436,9 @@ class TSN_Amd(nn.Module):
                 # update candidate_list based on policy rnn
                 raw_r, candidate_list = self.gate_fc_rnn_block(name, _input, candidate_list, tau)
 
-                take_bool = candidate_list[:,:,1] > 0.5
-                candidate_log_list.append(torch.tensor(take_bool, dtype=torch.float).cuda())
-#                 candidate_log_list.append(candidate_list[:,:,1])
+#                 take_bool = candidate_list[:,:,1] > 0.5
+#                 candidate_log_list.append(torch.tensor(take_bool, dtype=torch.float).cuda())
+                candidate_log_list.append(candidate_list[:,:,1])
                 raw_r_list.append(raw_r)
 
         block_out = self.pass_last_fc_block('new_fc', _input)
