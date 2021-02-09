@@ -625,6 +625,7 @@ def amd_get_gflops_t_tt_vector():
     return gflops_vec, t_vec, tt_vec #ex : (conv_2 skip, conv_3 skip, conv_4 skip, conv_5 skip, all_pass)
 
 def amd_cal_route(raw_r):
+    #r : B, T, K
     #raw_r : B, T, K, 2
     reweight = torch.tensor([100, 1]).cuda() # skip, pass
     reweight = reweight.repeat(raw_r.shape[0], raw_r.shape[1], 1) # B, T, 2
@@ -632,7 +633,8 @@ def amd_cal_route(raw_r):
     if args.routing_weight > 1e-6:
         
         # B, T ,2
-        route_target = torch.tensor((raw_r[:,:,-1].detach() > 0.5), dtype=torch.float).cuda()
+#         route_target = torch.tensor((raw_r[:,:,-1].detach() > 0.5), dtype=torch.float).cuda()
+        route_target = raw_r[:,:,-1].detach()
         for k_i in range(raw_r.shape[2]-1):
             r_loss -= torch.sum(torch.log(raw_r[:,:,k_i,:]) * route_target * reweight)
     
@@ -1192,7 +1194,10 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                os.makedirs(ospj(args.visual_log))
 
             visual_log_path = args.visual_log
-            visual_log_txt_path = ospj(visual_log_path, "visual_log.txt")
+            if args.ada_depth_skip :
+                visual_log_txt_path = ospj(visual_log_path, "amd_visual_log.txt")
+            else:
+                visual_log_txt_path = ospj(visual_log_path, "visual_log.txt")
             visual_log = open(visual_log_txt_path, "w")
 
         except OSError as e:
@@ -1302,7 +1307,18 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
             if args.visual_log != '':
                 target_val = target.cpu().numpy()[0][0]
                 output_val = output.max(dim=1)[1].cpu().numpy()[0]
+                print(len(input_tuple))
+                print(input_tuple[0].shape)
+                
+                input_path_list = list()
+                image_tmpl='image_{:05d}.jpg'
+                for seg_ind in input_tuple[meta_offset][0]:
+                    input_path_list.append(os.path.join(args.root_path, input_tuple[meta_offset-1][0], image_tmpl.format(int(seg_ind))))
 
+#                 for i in range(16):
+#                     input_path_list.append(str(input_tuple[1][i][0]))
+              
+                
                 if target_val == output_val :
                     print("True")
                     visual_log.write("\nTrue")
@@ -1311,8 +1327,9 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                     visual_log.write("\nFalse")
 
                 print('input path list')
-                print(input_path_list[0])
-                print(lambda x : x.cpu.numpy(), input_path_list[1:])
+                print(input_path_list)
+#                 print(input_path_list[0])
+#                 print(lambda x : x.cpu.numpy(), input_path_list[1:])
                 print('target')
                 print(target_val)
                 print('output')
@@ -1324,7 +1341,7 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                 #visual_log.write('\ninput path list: ')
                 for i in range(len(input_path_list)):
                     visual_log.write('\n')
-                    visual_log.write(str(input_path_list[i][0]))
+                    visual_log.write(input_path_list[i])
 
                 visual_log.write('\n')
                 visual_log.write(str(target_val))

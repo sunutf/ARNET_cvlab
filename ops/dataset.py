@@ -198,8 +198,10 @@ class TSNDataSet(data.Dataset):
     def get(self, record, indices):
 
         images = list()
+        img_path_list = list()
         for seg_ind in indices:
             images.extend(self._load_image(record.path, int(seg_ind)))
+
 
         process_data = self.transform(images)
         if self.ada_reso_skip:
@@ -227,8 +229,12 @@ class TSNDataSet(data.Dataset):
                     rescaled = self.center_crop_proc(process_data, (x, x))
                 else:
                     rescaled = self.rescale_proc(process_data, (x, x))
-
-            return rescaled, record.label
+            
+            return_items = [rescaled]
+            if self.save_meta:
+                return_items = return_items + [record.path] + [indices]  # [torch.tensor(indices)]
+            return_items = return_items + [record.label]           
+            return tuple(return_items)
 
     # TODO(yue)
     # (NC, H, W)->(NC, H', W')

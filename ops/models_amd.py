@@ -349,7 +349,19 @@ class TSN_Amd(nn.Module):
                     
                     old_hx = hx
             
+            #check all skip case
             r_list = torch.stack(r_list, dim=1)
+            _check_empty_candidate = r_list.sum(dim=1)
+            take_bool_r = _check_empty_candidate[:,1] > 0.5
+            take_bool_r = take_bool_r.unsqueeze(-1).repeat(1,2)
+            take_old_r  = torch.tensor(~take_bool_r, dtype=torch.float).cuda()
+            take_curr_r = torch.tensor(take_bool_r, dtype=torch.float).cuda()
+            
+            take_old_r = take_old_r.unsqueeze(1).expand(-1,16,-1)
+            take_curr_r = take_curr_r.unsqueeze(1).expand(-1,16,-1)
+
+
+            r_list = take_old_r * candidate_list.cuda() + take_curr_r * r_list
             raw_r_list = torch.stack(raw_r_list, dim=1)
 
         return raw_r_list, r_list
