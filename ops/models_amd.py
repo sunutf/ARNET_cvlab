@@ -112,6 +112,9 @@ class TSN_Amd(nn.Module):
                     SqueezeTwice(),
                     make_a_linear(feat_dim, feat_dim)
                 )
+                if self.args.diff_to_rnn:
+                    feat_dim = feat_dim*2
+                    
                 self.block_rnn_dict[name] = torch.nn.LSTMCell(input_size=feat_dim, hidden_size=self.args.hidden_dim)
                 self.action_fc_dict[name] = make_a_linear(self.args.hidden_dim, self.amd_action_dim)
                 if self.args.voting_policy:
@@ -327,14 +330,16 @@ class TSN_Amd(nn.Module):
             hx = init_hidden(batch_size, self.args.hidden_dim)
             cx = init_hidden(batch_size, self.args.hidden_dim)
             
-
             for t in range(self.time_steps):
                 old_r_t = candidate_list[:, t, 1].unsqueeze(-1).cuda()
 
                 if self.args.frame_independent:
                     feat_t = base_out[:, t]
                 else:
-                    hx, cx = self.block_rnn_dict[name](base_out[:, t], (hx, cx))
+                    rnn_input = base_out[:, t]
+                    if self.args.diff_to_rnn:
+                        rnn_input = torch.cat((rnn_input, (rnn_input - base_out[:,t-1] if t is not 0 else rnn_input)), dim = 1)
+                    hx, cx = self.block_rnn_dict[name](rnn_input, (hx, cx))
                     feat_t = hx
                     p_t = torch.log(F.softmax(self.action_fc_dict[name](feat_t), dim=1).clamp(min=1e-8))
                     r_t = torch.cat(
@@ -469,7 +474,7 @@ class TSN_Amd(nn.Module):
         if "tau" not in kwargs:
             kwargs["tau"] = None
         tau = kwargs["tau"]
-        voter_list =None
+        voter_list = None
         for name in self.block_cnn_dict.keys():
             # input image tensor with 224 size
             _input = self.pass_cnn_block(name, _input) 
@@ -511,8 +516,8 @@ class TSN_Amd(nn.Module):
                      if voter[b_i, t_i, :] is 1:
                         r_tensor[b_i, hold_idx, -1] += 1.0
             
+            
             t_tensor = t_tensor + torch.sum(voter, dim=[1]).unsqueeze(-1).clamp(1)
-
         return (pred_tensor * r_tensor).sum(dim=[1]) / t_tensor
 
         
