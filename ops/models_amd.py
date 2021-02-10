@@ -330,15 +330,20 @@ class TSN_Amd(nn.Module):
             hx = init_hidden(batch_size, self.args.hidden_dim)
             cx = init_hidden(batch_size, self.args.hidden_dim)
             
+            store_recent_pass = torch.zeros(batch_size, 1, dtype=torch.long).cuda()
+            
             for t in range(self.time_steps):
-                old_r_t = candidate_list[:, t, 1].unsqueeze(-1).cuda()
+                old_r_t = candidate_list[:, t, :].cuda() #B, K
 
                 if self.args.frame_independent:
                     feat_t = base_out[:, t]
                 else:
                     rnn_input = base_out[:, t]
                     if self.args.diff_to_rnn:
-                        rnn_input = torch.cat((rnn_input, (rnn_input - base_out[:,t-1] if t is not 0 else rnn_input)), dim = 1)
+                        
+                        recent_base_out = torch.cat([base_out[b_i, store_recent_pass[b_i][-1]].unsqueeze(0) for b_i in range(batch_size)], dim=0)
+                        rnn_input = torch.cat((rnn_input, (rnn_input - recent_base_out)), dim = 1)
+
                     hx, cx = self.block_rnn_dict[name](rnn_input, (hx, cx))
                     feat_t = hx
                     p_t = torch.log(F.softmax(self.action_fc_dict[name](feat_t), dim=1).clamp(min=1e-8))
@@ -367,17 +372,17 @@ class TSN_Amd(nn.Module):
                         voter_list.append(voter * voting_result)
                         
                     
-                    take_bool =  old_r_t > 0.5
+                    take_bool =  old_r_t[:,-1].unsqueeze(-1) > 0.5
                     take_old = torch.tensor(~take_bool, dtype=torch.float).cuda()
                     take_curr = torch.tensor(take_bool, dtype=torch.float).cuda()
                     r_t = old_r_t * take_old + r_t * take_curr
                     r_list.append(r_t)  # TODO as decision
                                       
+                    store_recent_pass = t*(torch.tensor(r_t[:,-1].unsqueeze(-1) > 0.5, dtype=torch.long).cuda())
                     if old_hx is not None:
                         hx = old_hx * take_old + hx * take_curr
                     
                     old_hx = hx
-            
             
             
             #check all skip case
@@ -397,7 +402,7 @@ class TSN_Amd(nn.Module):
             raw_r_list = torch.stack(raw_r_list, dim=1)
             if self.args.voting_policy:
                 voter_stack = voter_stack + torch.stack(voter_list, dim=1)
-
+        
         return raw_r_list, r_list, voter_stack
     
     def pass_last_fc_block(self, name, input_data):
@@ -469,7 +474,7 @@ class TSN_Amd(nn.Module):
 
         candidate_log_list = []
         raw_r_list = []
-        take_bool = candidate_list[:,:,1] > 0.5
+        take_bool = candidate_list[:,:,-1] > 0.5
         candidate_log_list.append(torch.tensor(take_bool, dtype=torch.float).cuda())
         if "tau" not in kwargs:
             kwargs["tau"] = None
@@ -487,12 +492,12 @@ class TSN_Amd(nn.Module):
 
 #                 take_bool = candidate_list[:,:,1] > 0.5
 #                 candidate_log_list.append(torch.tensor(take_bool, dtype=torch.float).cuda())
-                candidate_log_list.append(candidate_list[:,:,1])
+                candidate_log_list.append(candidate_list[:,:,-1])
                 raw_r_list.append(raw_r)
 
         block_out = self.pass_last_fc_block('new_fc', _input)
 
-        output = self.amd_combine_logits(candidate_list[:,:,1], block_out, voter_list)
+        output = self.amd_combine_logits(candidate_list[:,:,-1], block_out, voter_list)
         return output.squeeze(1), torch.stack(candidate_log_list, dim=2), torch.stack(raw_r_list, dim=2), None, block_out
 
     
