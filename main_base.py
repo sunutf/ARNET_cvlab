@@ -1307,16 +1307,12 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
             if args.visual_log != '':
                 target_val = target.cpu().numpy()[0][0]
                 output_val = output.max(dim=1)[1].cpu().numpy()[0]
-                print(len(input_tuple))
-                print(input_tuple[0].shape)
-                
+            
                 input_path_list = list()
                 image_tmpl='image_{:05d}.jpg'
                 for seg_ind in input_tuple[meta_offset][0]:
                     input_path_list.append(os.path.join(args.root_path, input_tuple[meta_offset-1][0], image_tmpl.format(int(seg_ind))))
 
-#                 for i in range(16):
-#                     input_path_list.append(str(input_tuple[1][i][0]))
               
                 
                 if target_val == output_val :
@@ -1327,7 +1323,7 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                     visual_log.write("\nFalse")
 
                 print('input path list')
-                print(input_path_list)
+                print(input_path_list[0])
 #                 print(input_path_list[0])
 #                 print(lambda x : x.cpu.numpy(), input_path_list[1:])
                 print('target')
@@ -1435,21 +1431,21 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
             usage_str, gflops = get_policy_usage_str(r_list, model.module.reso_dim)
         print(usage_str)
 
-        if args.save_meta:  # TODO save name, label, r, result
+#         if args.save_meta:  # TODO save name, label, r, result
 
-            npa = np.concatenate(r_list)
-            npb = np.stack(name_list)
-            npc = torch.cat(all_results).cpu().numpy()
-            npd = torch.cat(all_targets).cpu().numpy()
-            if args.save_all_preds:
-                npe = torch.cat(all_all_preds).cpu().numpy()
-            else:
-                npe = np.zeros(1)
+#             npa = np.concatenate(r_list)
+#             npb = np.stack(name_list)
+#             npc = torch.cat(all_results).cpu().numpy()
+#             npd = torch.cat(all_targets).cpu().numpy()
+#             if args.save_all_preds:
+#                 npe = torch.cat(all_all_preds).cpu().numpy()
+#             else:
+#                 npe = np.zeros(1)
 
-            npf = torch.cat(indices_list).cpu().numpy()
+#             npf = torch.cat(indices_list).cpu().numpy()
 
-            np.savez("%s/meta-val-%s.npy" % (exp_full_path, logger._timestr),
-                     rs=npa, names=npb, results=npc, targets=npd, all_preds=npe, indices=npf)
+#             np.savez("%s/meta-val-%s.npy" % (exp_full_path, logger._timestr),
+#                      rs=npa, names=npb, results=npc, targets=npd, all_preds=npe, indices=npf)
 
     if tf_writer is not None:
         tf_writer.add_scalar('loss/test', losses.avg, epoch)
