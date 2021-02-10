@@ -84,6 +84,7 @@ parser.add_argument('--block_rnn_list', default=['conv_2'], type=str, nargs=
                     '+', help='adaptively select depth of model')
 parser.add_argument('--pe_at_rnn', action='store_true', help='position encoding activate at rnn')
 parser.add_argument('--amd_freeze_backbone', action='store_true', help='freeze backbone')
+parser.add_argument('--voting_policy', action='store_true', help='voting activate')
 
 
 # TODO(yue) multi-label cases (for activity-net-v1.3)

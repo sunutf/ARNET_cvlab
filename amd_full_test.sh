@@ -43,7 +43,7 @@ echo "Using data path: ${DATA_DIR} and model path: ${MODEL_DIR}"
 #OUTPUT7=`cat tmp_log.txt | tail -n 3`
 
 #TODO 8. New S.O.T.A. AR-Net(resnet) using updated training logics (~76.8)
-python -u main_base.py actnet RGB --arch resnet50 --num_segments 16 --visual_log ../amd_visual_log --save_meta --npb --exp_header X --ada_depth_skip --block_rnn_list conv_2 conv_3 conv_4 conv_5 --accuracy_weight 0.8 --efficency_weight 0.2 --exp_decay --init_tau 0.000001 --policy_also_backbone --policy_input_offset 3 --use_gflops_loss --batch-size 48 -j 16 --gpus 0 1 2 3 --test_from ${MODEL_DIR}/amd_acc8_eff2.pth.tar --data_dir ${DATA_DIR} | tee tmp_log.txt 
+python -u main_base.py actnet RGB --arch resnet50 --num_segments 16 --npb --exp_header X --ada_depth_skip --block_rnn_list conv_2 conv_3 conv_4 conv_5 --pe_at_rnn --accuracy_weight 0.95 --efficency_weight 0.05 --exp_decay --init_tau 0.000001 --use_gflops_loss --batch-size 48 -j 16 --gpus 0 1 2 3 --test_from ${MODEL_DIR}/amd_acc8_eff2.pth.tar --data_dir ${DATA_DIR} | tee tmp_log.txt 
 OUTPUT8=`cat tmp_log.txt | tail -n 3`
 
  #echo -e "\n\033[1;36mEXPECT   : 73.830 (exp0_res_ada)\033[0m"
