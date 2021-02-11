@@ -865,13 +865,11 @@ def amd_get_policy_usage_str(r_list, skip_twice_r_list, act_dim):
     gflops_vec, t_vec, tt_vec = amd_get_gflops_t_tt_vector()
     printed_str = ""
     rs = np.concatenate(r_list, axis=0)
-    if skip_twice_r_list:
+    if skip_twice_r_list :
         st_rs = np.concatenate(skip_twice_r_list, axis=0)
         st_tmp_cnt = [np.sum(st_rs[:, :, iii] == 1) for iii in range(st_rs.shape[2])] 
-        st_tmp_total_cnt = st_tmp_cnt[0]
-
-
-#     tmp_cnt = [np.sum(rs[:, :, iii] == 1) for iii in range(rs.shape[2])]
+        prev_st_cnt = st_tmp_cnt[0]
+   
     tmp_cnt = [np.sum(rs[:, :, iii] == 1) for iii in range(rs.shape[2])] #[#all #conv_2 #conv_3 #conv_4 #conv_5]
     tmp_total_cnt = tmp_cnt[0]
 
@@ -895,8 +893,10 @@ def amd_get_policy_usage_str(r_list, skip_twice_r_list, act_dim):
         usage_ratio = tmp_cnt[action_i] / tmp_total_cnt
         printed_str += "%-22s: %6d (%.2f%%)" % (action_str, tmp_cnt[action_i], 100 * usage_ratio)
         if skip_twice_r_list:
-            printed_str += "  %6d (%.2f%%)" % (st_tmp_cnt[action_i], st_tmp_cnt[action_i] / (prev_pass_cnt - tmp_cnt[action_i]))
+            skip_twice_in_stage = (st_tmp_cnt[action_i] - prev_st_cnt) / (prev_pass_cnt - tmp_cnt[action_i])
+            printed_str += "| %6d (%.2f%%)" % ((st_tmp_cnt[action_i] - prev_st_cnt),  100 * skip_twice_in_stage)
             prev_pass_cnt = tmp_cnt[action_i]
+            prev_st_cnt = st_tmp_cnt[action_i]
         printed_str += "\n"
 
         gflops += usage_ratio * gflops_vec[action_i]
@@ -907,7 +907,7 @@ def amd_get_policy_usage_str(r_list, skip_twice_r_list, act_dim):
     printed_str += "GFLOPS: %.6f  AVG_FRAMES: %.3f " % (
         gflops, avg_frame_ratio * num_clips)
     if skip_twice_r_list:
-        printed_str += "skip_twice : %6d total_skip : %6d" % (st_tmp_total_cnt, tmp_total_cnt - tmp_cnt[rs.shape[2]-1]) 
+        printed_str += "skip_twice : %6d total_skip : %6d" % (st_tmp_cnt[st_rs.shape[2]-1], tmp_total_cnt - tmp_cnt[rs.shape[2]-1]) 
     return printed_str, gflops
 
 def get_policy_usage_str(r_list, reso_dim):
@@ -1136,11 +1136,11 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
                 roh_r = reverse_onehot(r[-1, :, :].detach().cpu().numpy())
                 if args.skip_twice:
                     st_roh_r = reverse_onehot(skip_twice_r[-1, :, :].detach().cpu().numpy())
-                    print_output += 'a_l {aloss.val:.4f} ({aloss.avg:.4f})\t e_l {eloss.val:.4f} ({eloss.avg:.4f})\t  r {r} st_r {st_r} pick {pick}'.format(
+                    print_output += '\n a_l {aloss.val:.4f} ({aloss.avg:.4f})\t e_l {eloss.val:.4f} ({eloss.avg:.4f})\t  r {r} st_r {st_r} pick {pick}'.format(
                         aloss=alosses, eloss=elosses, r=elastic_list_print(roh_r), st_r=elastic_list_print(st_roh_r), pick = np.count_nonzero(roh_r == 5)
                     )
                 else:
-                    print_output += 'a_l {aloss.val:.4f} ({aloss.avg:.4f})\t e_l {eloss.val:.4f} ({eloss.avg:.4f})\t  r {r} pick {pick}'.format(
+                    print_output += '\n a_l {aloss.val:.4f} ({aloss.avg:.4f})\t e_l {eloss.val:.4f} ({eloss.avg:.4f})\t  r {r} pick {pick}'.format(
                         aloss=alosses, eloss=elosses, r=elastic_list_print(roh_r), pick = np.count_nonzero(roh_r == 5)
                     )
                 print_output += extra_each_loss_str(each_terms)
@@ -1207,7 +1207,11 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                 all_bb_results.append([])
 
         each_terms = get_average_meters(NUM_LOSSES)
+        
         r_list = []
+        if args.skip_twice:
+            skip_twice_r_list = [] 
+            
         if args.save_meta:
             name_list = []
             indices_list = []
@@ -1358,25 +1362,7 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
             # measure elapsed time
             batch_time.update(time.time() - end)
             end = time.time()
-            
-         
-        
-            if use_ada_framework:
-                
-                roh_r = reverse_onehot(r[-1, :, :].detach().cpu().numpy())
-                
               
-
-    if use_ada_framework:
-        if args.ada_depth_skip :
-            if args.skip_twice :
-                usage_str, gflops = amd_get_policy_usage_str(r_list, skip_twice_r_list, len(args.block_rnn_list)+1)
-            else:
-                usage_str, gflops = amd_get_policy_usage_str(r_list, None, len(args.block_rnn_list)+1)
-
-        else:
-            usage_str, gflops = get_policy_usage_str(r_list, model.module.reso_dim)
-        print(usage_str)
             
             if use_ada_framework:
                 r_list.append(r.cpu().numpy())
@@ -1396,18 +1382,19 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                     i, len(val_loader), batch_time=batch_time, loss=losses,
                     top1=top1, top5=top5))
 
-               
-                if args.skip_twice:
-                    st_roh_r = reverse_onehot(skip_twice_r[-1, :, :].detach().cpu().numpy())
-                    print_output += 'a_l {aloss.val:.4f} ({aloss.avg:.4f})\t e_l {eloss.val:.4f} ({eloss.avg:.4f})\t  r {r} st_r {st_r} pick {pick}'.format(
-                        aloss=alosses, eloss=elosses, r=elastic_list_print(roh_r), st_r=elastic_list_print(st_roh_r), pick = np.count_nonzero(roh_r == 5)
-                    )
-                else:
-                    print_output += 'a_l {aloss.val:.4f} ({aloss.avg:.4f})\t e_l {eloss.val:.4f} ({eloss.avg:.4f})\t  r {r} pick {pick}'.format(
-                        aloss=alosses, eloss=elosses, r=elastic_list_print(roh_r), pick = np.count_nonzero(roh_r == 5)
-                    )
-                print_output += extra_each_loss_str(each_terms)
-          
+                if use_ada_framework:
+                    roh_r = reverse_onehot(r[-1, :, :].detach().cpu().numpy())
+                    if args.skip_twice:
+                        st_roh_r = reverse_onehot(skip_twice_r[-1, :, :].detach().cpu().numpy())
+                        print_output += ' \n a_l {aloss.val:.4f} ({aloss.avg:.4f})\t e_l {eloss.val:.4f} ({eloss.avg:.4f})\t  r {r} st_r {st_r} pick {pick}'.format(
+                            aloss=alosses, eloss=elosses, r=elastic_list_print(roh_r), st_r=elastic_list_print(st_roh_r), pick = np.count_nonzero(roh_r == 5)
+                        )
+                    else:
+                        print_output += '\n a_l {aloss.val:.4f} ({aloss.avg:.4f})\t e_l {eloss.val:.4f} ({eloss.avg:.4f})\t  r {r} pick {pick}'.format(
+                            aloss=alosses, eloss=elosses, r=elastic_list_print(roh_r), pick = np.count_nonzero(roh_r == 5)
+                        )
+                    print_output += extra_each_loss_str(each_terms)
+
                 print(print_output)
 
     mAP, _ = cal_map(torch.cat(all_results, 0).cpu(),
@@ -1437,13 +1424,18 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
         print("bb_Acc: " + " ".join(["{0:.3f}".format(bbprec1) for bbprec1 in bbprec1s]))
     gflops = 0
 
+    
     if use_ada_framework:
         if args.ada_depth_skip :
-            usage_str, gflops = amd_get_policy_usage_str(r_list, len(args.block_rnn_list)+1)
+            if args.skip_twice :
+                usage_str, gflops = amd_get_policy_usage_str(r_list, skip_twice_r_list, len(args.block_rnn_list)+1)
+            else:
+                usage_str, gflops = amd_get_policy_usage_str(r_list, None, len(args.block_rnn_list)+1)
+
         else:
             usage_str, gflops = get_policy_usage_str(r_list, model.module.reso_dim)
         print(usage_str)
-
+    
 #         if args.save_meta:  # TODO save name, label, r, result
 
 #             npa = np.concatenate(r_list)
