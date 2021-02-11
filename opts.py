@@ -86,6 +86,7 @@ parser.add_argument('--pe_at_rnn', action='store_true', help='position encoding 
 parser.add_argument('--amd_freeze_backbone', action='store_true', help='freeze backbone')
 parser.add_argument('--voting_policy', action='store_true', help='voting activate')
 parser.add_argument('--diff_to_rnn', action='store_true', help='give diff btw frames to rnn')
+parser.add_argument('--skip_twice', action='store_true', help='add skip twice policy')
 
 
 

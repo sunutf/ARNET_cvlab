@@ -74,7 +74,11 @@ class TSN_Amd(nn.Module):
             
             self.block_rnn_list = self.args.block_rnn_list
             
-            self.amd_action_dim = 2 #0 , 1 (skip(0) or pass(1))
+            if self.args.skip_twice:
+                self.amd_action_dim = 3 # 0 , 1, 2 
+            else:
+                self.amd_action_dim = 2 #0 , 1 (skip(0) or pass(1))
+
 
             self._split_base_cnn_to_block(self.base_model)
             self._prepare_policy_block(self.base_model)
@@ -334,6 +338,12 @@ class TSN_Amd(nn.Module):
             
             for t in range(self.time_steps):
                 old_r_t = candidate_list[:, t, :].cuda() #B, K
+                
+                if t !=0 and self.args.skip_twice:
+                    take_bool =  r_t[:,1].unsqueeze(-1) > 0.5 #skip twice
+                    take_old_r = torch.tensor(~take_bool, dtype=torch.float).cuda()
+                    old_r_t = old_r_t * take_old_r 
+                    
 
                 if self.args.frame_independent:
                     feat_t = base_out[:, t]
@@ -377,10 +387,11 @@ class TSN_Amd(nn.Module):
                     take_curr = torch.tensor(take_bool, dtype=torch.float).cuda()
                     r_t = old_r_t * take_old + r_t * take_curr
                     r_list.append(r_t)  # TODO as decision
-                                      
-                    store_recent_pass = t*(torch.tensor(r_t[:,-1].unsqueeze(-1) > 0.5, dtype=torch.long).cuda())
+                    
+                                  
                     if old_hx is not None:
                         hx = old_hx * take_old + hx * take_curr
+                    
                     
                     old_hx = hx
             
@@ -470,7 +481,10 @@ class TSN_Amd(nn.Module):
         batch_size = input_list[0].shape[0]  # TODO(yue) input[0] B*(TC)*H*W
         _input = input_list[0]
         candidate_list = torch.zeros(batch_size, self.time_steps, 1)
-        candidate_list = torch.cat([torch.zeros(batch_size, self.time_steps, 1), torch.ones(batch_size, self.time_steps, 1)], 2) #B, T, K
+        if self.args.skip_twice:
+            candidate_list = torch.cat([torch.zeros(batch_size, self.time_steps, 1), torch.zeros(batch_size, self.time_steps, 1), torch.ones(batch_size, self.time_steps, 1)], 2) #B, T, K
+        else:
+            candidate_list = torch.cat([torch.zeros(batch_size, self.time_steps, 1), torch.ones(batch_size, self.time_steps, 1)], 2) #B, T, K
 
         candidate_log_list = []
         raw_r_list = []
