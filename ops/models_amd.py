@@ -322,7 +322,7 @@ class TSN_Amd(nn.Module):
     def gate_fc_rnn_block(self, name, input_data, candidate_list, tau, voter_stack = None):
         
         r_list = []
-        raw_r_list = []
+        skip_twice_list = []
         voter_list = []
         if name in self.block_rnn_dict.keys(): # gate activate = policy on 
             base_out = self.block_fc_backbone(name, input_data, self.block_fc_dict[name])
@@ -357,9 +357,7 @@ class TSN_Amd(nn.Module):
                     hx, cx = self.block_rnn_dict[name](rnn_input, (hx, cx))
                     feat_t = hx
                     p_t = torch.log(F.softmax(self.action_fc_dict[name](feat_t), dim=1).clamp(min=1e-8))
-                    r_t = torch.cat(
-                        [F.gumbel_softmax(p_t[b_i:b_i + 1], tau, False) for b_i in range(p_t.shape[0])])
-                    raw_r_list.append(r_t)
+                   
                     
                     r_t = torch.cat(
                         [F.gumbel_softmax(p_t[b_i:b_i + 1], tau, True) for b_i in range(p_t.shape[0])])
@@ -388,6 +386,10 @@ class TSN_Amd(nn.Module):
                     r_t = old_r_t * take_old + r_t * take_curr
                     r_list.append(r_t)  # TODO as decision
                     
+                    if self.args.skip_twice:
+                        take_bool =  r_t[:,-2].unsqueeze(-1) > 0.5
+                        skip_twice_list.append(torch.tensor(take_bool, dtype=torch.float).cuda())
+                    
                                   
                     if old_hx is not None:
                         hx = old_hx * take_old + hx * take_curr
@@ -410,11 +412,12 @@ class TSN_Amd(nn.Module):
 
 #             r_list = take_old_r * candidate_list.cuda() + take_curr_r * r_list
             r_list = torch.stack(r_list, dim=1)
-            raw_r_list = torch.stack(raw_r_list, dim=1)
+           
+                skip_twice_list = torch.stack(skip_twice_list, dim=1)
             if self.args.voting_policy:
                 voter_stack = voter_stack + torch.stack(voter_list, dim=1)
         
-        return raw_r_list, r_list, voter_stack
+        return skip_twice_list, r_list, voter_stack
     
     def pass_last_fc_block(self, name, input_data):
         if self.args.amd_freeze_backbone:
@@ -487,7 +490,7 @@ class TSN_Amd(nn.Module):
             candidate_list = torch.cat([torch.zeros(batch_size, self.time_steps, 1), torch.ones(batch_size, self.time_steps, 1)], 2) #B, T, K
 
         candidate_log_list = []
-        raw_r_list = []
+        skip_twice_list = []
         take_bool = candidate_list[:,:,-1] > 0.5
         candidate_log_list.append(torch.tensor(take_bool, dtype=torch.float).cuda())
         if "tau" not in kwargs:
@@ -502,17 +505,22 @@ class TSN_Amd(nn.Module):
                 if self.args.voting_policy:
                     voter_list = torch.zeros(batch_size, self.time_steps, 1, dtype=torch.float).cuda() #B, T, 1
                 # update candidate_list based on policy rnn
-                raw_r, candidate_list, voter_list = self.gate_fc_rnn_block(name, _input, candidate_list, tau, voter_list)
+                skip_twice, candidate_list, voter_list = self.gate_fc_rnn_block(name, _input, candidate_list, tau, voter_list)
 
 #                 take_bool = candidate_list[:,:,1] > 0.5
 #                 candidate_log_list.append(torch.tensor(take_bool, dtype=torch.float).cuda())
                 candidate_log_list.append(candidate_list[:,:,-1])
-                raw_r_list.append(raw_r)
+                if self.args.skip_twice:
+                    skip_twice_list.append(skip_twice)
 
         block_out = self.pass_last_fc_block('new_fc', _input)
 
         output = self.amd_combine_logits(candidate_list[:,:,-1], block_out, voter_list)
-        return output.squeeze(1), torch.stack(candidate_log_list, dim=2), torch.stack(raw_r_list, dim=2), None, block_out
+        if self.args.skip_twice:
+            return output.squeeze(1), torch.stack(candidate_log_list, dim=2), torch.stack(skip_twice_list, dim=2), None, block_out
+        else:
+            return output.squeeze(1), torch.stack(candidate_log_list, dim=2), None, None, block_out
+
 
     
 
