@@ -685,8 +685,29 @@ def amd_cal_eff(r):
         each_losses.append(frames_loss.detach().cpu().item())
 
     return loss, each_losses    
-        
-        
+
+def amd_cal_kld(output, r, base_outs):
+    class diff_tanh_KLD(torch.autograd.Function):
+            
+        @staticmethod
+        def forward(ctx, input):
+            ctx.save_for_backward(input)
+            tanh = torch.nn.Tanh()
+            return 1 - (1-tanh(input))*(1+tanh(input)).clamp(min=1e-6)
+
+        @staticmethod
+        def backward(ctx, grad_output):
+            input, = ctx.saved_tensors
+            tanh = torch.nn.Tanh()
+            return (grad_output.clone()*(2)*tanh(input)*(1-tanh(input))*(1+tanh(input))).clamp(min=1e-6)
+    
+    pred_frame_outs = torch.tensor(base_outs) * torch.mean(r,dim=[2]).unsqueeze(-1)
+    KLD_criterion = torch.nn.KLDivLoss(reduction='batchmean')
+    DTK_criterion = diff_tanh_KLD().apply
+    kld_loss = KLD_criterion(pred_frame_outs,torch.tensor(output).unsqueeze(1).expand(-1, 16, -1))
+    diff_tanh_kld_loss = DTK_criterion(kld_loss)
+    return diff_tanh_kld_loss
+       
         
         
 
@@ -989,9 +1010,10 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
     tau = 0
     if use_ada_framework:
         tau = get_current_temperature(epoch)
-        alosses, elosses = get_average_meters(2)
+        alosses, elosses, kld_losses = get_average_meters(3)
         each_terms = get_average_meters(NUM_LOSSES)
         r_list = []
+        kld_loss = 0
         if args.skip_twice:
             skip_twice_r_list = []
 
@@ -1032,6 +1054,11 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
 
             if use_ada_framework:
                 acc_loss, eff_loss, each_losses = compute_every_losses(r, acc_loss, epoch)
+                if args.use_kld_loss:
+                    kld_loss = amd_cal_kld(output, r, base_outs)
+                    
+                    kld_losses.update(kld_loss.item(), input.size(0))
+                
 
                 if args.use_reinforce and not args.freeze_policy:
                     if args.separated:
@@ -1084,7 +1111,7 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
 
                 for l_i, each_loss in enumerate(each_losses):
                     each_terms[l_i].update(each_loss, input.size(0))
-                loss = acc_loss + eff_loss
+                loss = acc_loss + eff_loss + kld_loss
             else:
                 loss = acc_loss
         else:
@@ -1138,6 +1165,10 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
                     st_roh_r = reverse_onehot(skip_twice_r[-1, :, :].detach().cpu().numpy())
                     print_output += '\n a_l {aloss.val:.4f} ({aloss.avg:.4f})\t e_l {eloss.val:.4f} ({eloss.avg:.4f})\t  r {r} st_r {st_r} pick {pick}'.format(
                         aloss=alosses, eloss=elosses, r=elastic_list_print(roh_r), st_r=elastic_list_print(st_roh_r), pick = np.count_nonzero(roh_r == 5)
+                    )
+                elif args.use_kld_loss:
+                    print_output += '\n a_l {aloss.val:.4f} ({aloss.avg:.4f})\t e_l {eloss.val:.4f} ({eloss.avg:.4f})\t  k_l {kld_loss.val:.4f} ({kld_loss.avg:.4f})\t r {r} pick {pick}'.format(
+                        aloss=alosses, eloss=elosses, kld_loss=kld_losses, r=elastic_list_print(roh_r), pick = np.count_nonzero(roh_r == 5)
                     )
                 else:
                     print_output += '\n a_l {aloss.val:.4f} ({aloss.avg:.4f})\t e_l {eloss.val:.4f} ({eloss.avg:.4f})\t  r {r} pick {pick}'.format(
@@ -1197,8 +1228,8 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
 
     if use_ada_framework:
         tau = get_current_temperature(epoch)
-        alosses, elosses = get_average_meters(2)
-
+        alosses, elosses, kld_losses = get_average_meters(3)
+        kld_loss = 0
         iter_list = args.backbone_list
 
         if not i_dont_need_bb:
@@ -1250,7 +1281,10 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                             acc_loss = get_criterion_loss(criterion, output, target)
                 if use_ada_framework:
                     acc_loss, eff_loss, each_losses = compute_every_losses(r, acc_loss, epoch)
-
+                    if args.use_kld_loss:
+                        kld_loss = amd_cal_kld(output, r, base_outs)
+                        kld_losses.update(kld_loss.item(), input.size(0))
+                
                     if args.use_reinforce and not args.freeze_policy:
                         if args.separated:
                             acc_loss_items = []
@@ -1290,7 +1324,7 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                     elosses.update(eff_loss.item(), input.size(0))
                     for l_i, each_loss in enumerate(each_losses):
                         each_terms[l_i].update(each_loss, input.size(0))
-                    loss = acc_loss + eff_loss
+                    loss = acc_loss + eff_loss + kld_loss
                 else:
                     loss = acc_loss
             else:
@@ -1389,6 +1423,10 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                         print_output += ' \n a_l {aloss.val:.4f} ({aloss.avg:.4f})\t e_l {eloss.val:.4f} ({eloss.avg:.4f})\t  r {r} st_r {st_r} pick {pick}'.format(
                             aloss=alosses, eloss=elosses, r=elastic_list_print(roh_r), st_r=elastic_list_print(st_roh_r), pick = np.count_nonzero(roh_r == 5)
                         )
+                    elif args.use_kld_loss:
+                        print_output += '\n a_l {aloss.val:.4f} ({aloss.avg:.4f})\t e_l {eloss.val:.4f} ({eloss.avg:.4f})\t  k_l {kld_loss.val:.4f} ({kld_loss.avg:.4f})\t r {r} pick {pick}'.format(
+                        aloss=alosses, eloss=elosses, kld_loss=kld_losses, r=elastic_list_print(roh_r), pick = np.count_nonzero(roh_r == 5)
+                    )
                     else:
                         print_output += '\n a_l {aloss.val:.4f} ({aloss.avg:.4f})\t e_l {eloss.val:.4f} ({eloss.avg:.4f})\t  r {r} pick {pick}'.format(
                             aloss=alosses, eloss=elosses, r=elastic_list_print(roh_r), pick = np.count_nonzero(roh_r == 5)

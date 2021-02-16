@@ -356,8 +356,6 @@ class TSN_Amd(nn.Module):
                     hx, cx = self.block_rnn_dict[name](rnn_input, (hx, cx))
                     feat_t = hx
                     p_t = torch.log(F.softmax(self.action_fc_dict[name](feat_t), dim=1).clamp(min=1e-8))
-                   
-                    
                     r_t = torch.cat(
                         [F.gumbel_softmax(p_t[b_i:b_i + 1], tau, True) for b_i in range(p_t.shape[0])])
                     
