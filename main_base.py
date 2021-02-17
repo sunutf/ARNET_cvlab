@@ -9,6 +9,7 @@ import torch.nn.parallel
 import torch.backends.cudnn as cudnn
 import torch.optim
 from torch.nn.utils import clip_grad_norm_
+import math
 
 from ops.dataset import TSNDataSet
 from ops.models_ada import TSN_Ada
@@ -701,12 +702,21 @@ def amd_cal_kld(output, r, base_outs):
             tanh = torch.nn.Tanh()
             return (grad_output.clone()*(2)*tanh(input)*(1-tanh(input))*(1+tanh(input))).clamp(min=1e-6)
     
-    pred_frame_outs = torch.tensor(base_outs) * torch.mean(r,dim=[2]).unsqueeze(-1)
-    KLD_criterion = torch.nn.KLDivLoss(reduction='batchmean')
-    DTK_criterion = diff_tanh_KLD().apply
-    kld_loss = KLD_criterion(pred_frame_outs,torch.tensor(output).unsqueeze(1).expand(-1, 16, -1))
-    diff_tanh_kld_loss = DTK_criterion(kld_loss)
-    return diff_tanh_kld_loss
+    cossim = torch.nn.CosineSimilarity(dim=2, eps=1e-6)
+#     pred_frame_outs = torch.tensor(base_outs) * torch.mean(r[:,:,,1:],dim=[2]).unsqueeze(-1)
+    r_mean = torch.mean(r[:,:,1:], dim=[2]).unsqueeze(-1) 
+#     KLD_criterion = torch.nn.KLDivLoss(reduction='batchmean')
+#     DTK_criterion = diff_tanh_KLD().apply
+#     kld_loss = KLD_criterion(pred_frame_outs,torch.tensor(output).unsqueeze(1).expand(-1, 16, -1))
+#     diff_tanh_kld_loss = DTK_criterion(kld_loss)
+
+    cossim_outs = cossim(torch.tensor(output).unsqueeze(1).expand(-1, 16, -1), base_outs).unsqueeze(-1)
+    sim_base_outs = torch.sum(r_mean * 0.5 * (1 + cossim_outs) * base_outs, dim=[1]) #-1~1 -> 0~1 
+
+    take_bool = r_mean > 0
+    t_tensor = torch.sum(torch.tensor(take_bool, dtype=torch.float).cuda(), dim=[1])
+    
+    return sim_base_outs/t_tensor
        
         
         
@@ -878,8 +888,7 @@ def elastic_list_print(l, limit=8):
 
 
 def compute_exp_decay_tau(epoch):
-#     return args.init_tau * np.exp(args.exp_decay_factor * epoch)
-    return args.init_tau
+    return args.init_tau * np.exp(args.exp_decay_factor * epoch)
 
 
 
@@ -1057,7 +1066,7 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
             if use_ada_framework:
                 acc_loss, eff_loss, each_losses = compute_every_losses(r, acc_loss, epoch)
                 if args.use_kld_loss:
-                    kld_loss = amd_cal_kld(output, r, base_outs)
+                    kld_loss = args.accuracy_weight * get_criterion_loss(criterion, amd_cal_kld(output, r, base_outs), target_var)
                     
                     kld_losses.update(kld_loss.item(), input.size(0))
                 
@@ -1284,7 +1293,7 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                 if use_ada_framework:
                     acc_loss, eff_loss, each_losses = compute_every_losses(r, acc_loss, epoch)
                     if args.use_kld_loss:
-                        kld_loss = amd_cal_kld(output, r, base_outs)
+                        kld_loss = args.accuracy_weight * get_criterion_loss(criterion, amd_cal_kld(output, r, base_outs), target)
                         kld_losses.update(kld_loss.item(), input.size(0))
                 
                     if args.use_reinforce and not args.freeze_policy:
