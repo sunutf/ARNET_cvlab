@@ -878,7 +878,9 @@ def elastic_list_print(l, limit=8):
 
 
 def compute_exp_decay_tau(epoch):
-    return args.init_tau * np.exp(args.exp_decay_factor * epoch)
+#     return args.init_tau * np.exp(args.exp_decay_factor * epoch)
+    return args.init_tau
+
 
 
 
