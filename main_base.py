@@ -710,8 +710,9 @@ def amd_cal_kld(output, r, base_outs):
 #     kld_loss = KLD_criterion(pred_frame_outs,torch.tensor(output).unsqueeze(1).expand(-1, 16, -1))
 #     diff_tanh_kld_loss = DTK_criterion(kld_loss)
 
+    relu = torch.nn.ReLU()
     cossim_outs = cossim(torch.tensor(output).unsqueeze(1).expand(-1, 16, -1), base_outs).unsqueeze(-1)
-    sim_base_outs = torch.sum(r_mean * 0.5 * (1 + cossim_outs) * base_outs, dim=[1]) #-1~1 -> 0~1 
+    sim_base_outs = torch.sum(r_mean * relu(cossim_outs) * base_outs, dim=[1]) #-1~1 -> 0~1 
 
     take_bool = r_mean > 0
     t_tensor = torch.sum(torch.tensor(take_bool, dtype=torch.float).cuda(), dim=[1])
@@ -1066,7 +1067,7 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
             if use_ada_framework:
                 acc_loss, eff_loss, each_losses = compute_every_losses(r, acc_loss, epoch)
                 if args.use_kld_loss:
-                    kld_loss = args.accuracy_weight * get_criterion_loss(criterion, amd_cal_kld(output, r, base_outs), target_var)
+                    kld_loss = args.accuracy_weight/2 * get_criterion_loss(criterion, amd_cal_kld(output, r, base_outs), target_var)
                     
                     kld_losses.update(kld_loss.item(), input.size(0))
                 
@@ -1293,7 +1294,7 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                 if use_ada_framework:
                     acc_loss, eff_loss, each_losses = compute_every_losses(r, acc_loss, epoch)
                     if args.use_kld_loss:
-                        kld_loss = args.accuracy_weight * get_criterion_loss(criterion, amd_cal_kld(output, r, base_outs), target)
+                        kld_loss = args.accuracy_weight/2 * get_criterion_loss(criterion, amd_cal_kld(output, r, base_outs), target)
                         kld_losses.update(kld_loss.item(), input.size(0))
                 
                     if args.use_reinforce and not args.freeze_policy:
