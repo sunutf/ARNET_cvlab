@@ -632,7 +632,10 @@ def amd_cal_eff(r):
     # r_loss : pass conv_2/ conv_3/ conv_4/ conv_5/ all
     gflops_vec, t_vec, tt_vec = amd_get_gflops_t_tt_vector()
     t_vec = torch.tensor(t_vec).cuda()
-
+    
+    for i in range(1, len(gflops_vec)):
+        gflops_vec[i] += gflops_vec[i-1]
+    
     if args.use_gflops_loss:
         r_loss = torch.tensor(gflops_vec).cuda()
     else:
@@ -714,10 +717,11 @@ def amd_cal_kld(output, r, base_outs):
     cossim_outs = cossim(torch.tensor(output).unsqueeze(1).expand(-1, 16, -1), base_outs).unsqueeze(-1)
     sim_base_outs = torch.sum(r_mean * relu(cossim_outs) * base_outs, dim=[1]) #-1~1 -> 0~1 
 
-    take_bool = r_mean > 0
-    t_tensor = torch.sum(torch.tensor(take_bool, dtype=torch.float).cuda(), dim=[1])
+#     take_bool = r_mean > 0
+#     t_tensor = torch.sum(torch.tensor(take_bool, dtype=torch.float).cuda(), dim=[1])
+    total_tensor = torch.sum(r_mean * relu(cossim_outs), dim=[1]).clamp(min=1e-6)
     
-    return sim_base_outs/t_tensor
+    return sim_base_outs/total_tensor
        
         
         
