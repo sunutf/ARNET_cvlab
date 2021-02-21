@@ -494,7 +494,7 @@ class TSN_Amd(nn.Module):
             # input image tensor with 224 size
             _input = self.pass_cnn_block(name, _input) 
 
-            if name is not 'base':
+            if name is not 'base' and name in self.block_rnn_list:
                 if self.args.voting_policy:
                     voter_list = torch.zeros(batch_size, self.time_steps, 1, dtype=torch.float).cuda() #B, T, 1
                 # update candidate_list based on policy rnn
@@ -502,6 +502,7 @@ class TSN_Amd(nn.Module):
 
 #                 take_bool = candidate_list[:,:,1] > 0.5
 #                 candidate_log_list.append(torch.tensor(take_bool, dtype=torch.float).cuda())
+              
                 candidate_log_list.append(candidate_list[:,:,-1])
                 if self.args.skip_twice:
                     skip_twice_list.append(candidate_list[:,:,-2])

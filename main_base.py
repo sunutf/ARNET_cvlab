@@ -560,19 +560,20 @@ def amd_init_gflops_table():
     gflops_table = {}
     default_gflops_table = {}
     seg_len = -1
+    resolution = args.rescale_to
     
     """get gflops of block even it not using"""
     default_block_list = ["conv_2", "conv_3", "conv_4", "conv_5", "base"]
     default_case_list = ["cnn", "rnn"]
 
     default_gflops_table[str(args.arch) + "base"] = \
-                amd_get_gflops_params(args.arch, "base", num_class, case="cnn", seg_len=seg_len)[0]
+                amd_get_gflops_params(args.arch, "base", num_class, resolution = resolution, case="cnn", seg_len=seg_len)[0]
     default_gflops_table[str(args.arch) + "base" + "fc"] = \
-                amd_get_gflops_params(args.arch, "base_fc", num_class, case="cnn", seg_len=seg_len)[0]
+                amd_get_gflops_params(args.arch, "base_fc", num_class, resolution = resolution, case="cnn", seg_len=seg_len)[0]
     for _block in default_block_list:
         for _case in default_case_list:
             default_gflops_table[str(args.arch) + _block + _case] = \
-                amd_get_gflops_params(args.arch, _block, num_class, case=_case, hidden_dim = args.hidden_dim if _case is "rnn" else None, seg_len=seg_len)[0]
+                amd_get_gflops_params(args.arch, _block, num_class, resolution = resolution, case=_case, hidden_dim = args.hidden_dim if _case is "rnn" else None, seg_len=seg_len)[0]
             
             
     """add gflops of unusing block to using block"""
@@ -1127,6 +1128,8 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
 
                 for l_i, each_loss in enumerate(each_losses):
                     each_terms[l_i].update(each_loss, input.size(0))
+                    
+            if args.use_kld_loss:
                 loss = acc_loss + eff_loss + kld_loss
             else:
                 loss = acc_loss
@@ -1180,15 +1183,15 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
                 if args.skip_twice:
                     st_roh_r = reverse_onehot(skip_twice_r[-1, :, :].detach().cpu().numpy())
                     print_output += '\n a_l {aloss.val:.4f} ({aloss.avg:.4f})\t e_l {eloss.val:.4f} ({eloss.avg:.4f})\t  r {r} st_r {st_r} pick {pick}'.format(
-                        aloss=alosses, eloss=elosses, r=elastic_list_print(roh_r), st_r=elastic_list_print(st_roh_r), pick = np.count_nonzero(roh_r == 5)
+                        aloss=alosses, eloss=elosses, r=elastic_list_print(roh_r), st_r=elastic_list_print(st_roh_r), pick = np.count_nonzero(roh_r == len(args.block_rnn_list)+1)
                     )
                 elif args.use_kld_loss:
                     print_output += '\n a_l {aloss.val:.4f} ({aloss.avg:.4f})\t e_l {eloss.val:.4f} ({eloss.avg:.4f})\t  k_l {kld_loss.val:.4f} ({kld_loss.avg:.4f})\t r {r} pick {pick}'.format(
-                        aloss=alosses, eloss=elosses, kld_loss=kld_losses, r=elastic_list_print(roh_r), pick = np.count_nonzero(roh_r == 5)
+                        aloss=alosses, eloss=elosses, kld_loss=kld_losses, r=elastic_list_print(roh_r), pick = np.count_nonzero(roh_r == len(args.block_rnn_list)+1)
                     )
                 else:
                     print_output += '\n a_l {aloss.val:.4f} ({aloss.avg:.4f})\t e_l {eloss.val:.4f} ({eloss.avg:.4f})\t  r {r} pick {pick}'.format(
-                        aloss=alosses, eloss=elosses, r=elastic_list_print(roh_r), pick = np.count_nonzero(roh_r == 5)
+                        aloss=alosses, eloss=elosses, r=elastic_list_print(roh_r), pick = np.count_nonzero(roh_r == len(args.block_rnn_list)+1)
                     )
                 print_output += extra_each_loss_str(each_terms)
             if args.show_pred:
@@ -1340,6 +1343,8 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                     elosses.update(eff_loss.item(), input.size(0))
                     for l_i, each_loss in enumerate(each_losses):
                         each_terms[l_i].update(each_loss, input.size(0))
+                    
+                if args.use_kld_loss:
                     loss = acc_loss + eff_loss + kld_loss
                 else:
                     loss = acc_loss
@@ -1437,15 +1442,15 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                     if args.skip_twice:
                         st_roh_r = reverse_onehot(skip_twice_r[-1, :, :].detach().cpu().numpy())
                         print_output += ' \n a_l {aloss.val:.4f} ({aloss.avg:.4f})\t e_l {eloss.val:.4f} ({eloss.avg:.4f})\t  r {r} st_r {st_r} pick {pick}'.format(
-                            aloss=alosses, eloss=elosses, r=elastic_list_print(roh_r), st_r=elastic_list_print(st_roh_r), pick = np.count_nonzero(roh_r == 5)
+                            aloss=alosses, eloss=elosses, r=elastic_list_print(roh_r), st_r=elastic_list_print(st_roh_r), pick = np.count_nonzero(roh_r == len(args.block_rnn_list)+1)
                         )
                     elif args.use_kld_loss:
                         print_output += '\n a_l {aloss.val:.4f} ({aloss.avg:.4f})\t e_l {eloss.val:.4f} ({eloss.avg:.4f})\t  k_l {kld_loss.val:.4f} ({kld_loss.avg:.4f})\t r {r} pick {pick}'.format(
-                        aloss=alosses, eloss=elosses, kld_loss=kld_losses, r=elastic_list_print(roh_r), pick = np.count_nonzero(roh_r == 5)
+                        aloss=alosses, eloss=elosses, kld_loss=kld_losses, r=elastic_list_print(roh_r), pick = np.count_nonzero(roh_r == len(args.block_rnn_list)+1)
                     )
                     else:
                         print_output += '\n a_l {aloss.val:.4f} ({aloss.avg:.4f})\t e_l {eloss.val:.4f} ({eloss.avg:.4f})\t  r {r} pick {pick}'.format(
-                            aloss=alosses, eloss=elosses, r=elastic_list_print(roh_r), pick = np.count_nonzero(roh_r == 5)
+                            aloss=alosses, eloss=elosses, r=elastic_list_print(roh_r), pick = np.count_nonzero(roh_r == len(args.block_rnn_list)+1)
                         )
                     print_output += extra_each_loss_str(each_terms)
 
