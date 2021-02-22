@@ -1132,7 +1132,7 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
             if args.use_kld_loss:
                 loss = acc_loss + eff_loss + kld_loss
             else:
-                loss = acc_loss
+                loss = acc_loss + eff_loss
         else:
             input_var = torch.autograd.Variable(input)
             output = model(input=[input_var])
@@ -1347,7 +1347,7 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                 if args.use_kld_loss:
                     loss = acc_loss + eff_loss + kld_loss
                 else:
-                    loss = acc_loss
+                    loss = acc_loss + eff_loss
             else:
                 output = model(input=[input])
                 loss = get_criterion_loss(criterion, output, target)
