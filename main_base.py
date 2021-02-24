@@ -568,7 +568,6 @@ def amd_init_gflops_table():
     resize = int(args.rescale_to)
    
     default_gflops_table[str(args.arch) + "base"] = \
-<<<<<<< HEAD
                 amd_get_gflops_params(args.arch, "base", num_class, resolution=resize, case="cnn", seg_len=seg_len)[0]
     default_gflops_table[str(args.arch) + "base" + "fc"] = \
                 amd_get_gflops_params(args.arch, "base_fc", num_class, resolution=resize, case="cnn", seg_len=seg_len)[0]
@@ -578,17 +577,7 @@ def amd_init_gflops_table():
                 amd_get_gflops_params(args.arch, _block, num_class, resolution=resize, case=_case, hidden_dim = args.hidden_dim if _case is "rnn" else None, seg_len=seg_len)[0]
     
     print(default_gflops_table)
-=======
-                amd_get_gflops_params(args.arch, "base", num_class, resolution = resolution, case="cnn", seg_len=seg_len)[0]
-    default_gflops_table[str(args.arch) + "base" + "fc"] = \
-                amd_get_gflops_params(args.arch, "base_fc", num_class, resolution = resolution, case="cnn", seg_len=seg_len)[0]
-    for _block in default_block_list:
-        for _case in default_case_list:
-            default_gflops_table[str(args.arch) + _block + _case] = \
-                amd_get_gflops_params(args.arch, _block, num_class, resolution = resolution, case=_case, hidden_dim = args.hidden_dim if _case is "rnn" else None, seg_len=seg_len)[0]
-            
->>>>>>> aa5c8bfca7502721ef501fd7661b3e2791d7be95
-            
+
     """add gflops of unusing block to using block"""
     start = 0
     for using_block in args.block_rnn_list :
@@ -1164,14 +1153,9 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
 
                 for l_i, each_loss in enumerate(each_losses):
                     each_terms[l_i].update(each_loss, input.size(0))
-<<<<<<< HEAD
+
             if args.use_kld_loss:
                 loss = acc_loss + eff_loss + args.accuracy_weight/2 * kld_loss
-=======
-                    
-            if args.use_kld_loss:
-                loss = acc_loss + eff_loss + kld_loss
->>>>>>> aa5c8bfca7502721ef501fd7661b3e2791d7be95
             else:
                 loss = acc_loss + eff_loss
         else:
@@ -1385,14 +1369,8 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                     elosses.update(eff_loss.item(), input.size(0))
                     for l_i, each_loss in enumerate(each_losses):
                         each_terms[l_i].update(each_loss, input.size(0))
-<<<<<<< HEAD
                 if args.use_kld_loss:
                     loss = acc_loss + eff_loss + args.accuracy_weight/2 * kld_loss
-=======
-                    
-                if args.use_kld_loss:
-                    loss = acc_loss + eff_loss + kld_loss
->>>>>>> aa5c8bfca7502721ef501fd7661b3e2791d7be95
                 else:
                     loss = acc_loss + eff_loss
             else:
