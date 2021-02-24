@@ -144,7 +144,7 @@ if __name__ == "__main__":
     
     for case in case_list:
         for block in block_list:
-            _flops, _params = amd_get_gflops_params(model_name, block, num_classes, case=case, hidden_dim=hidden_dim)
+            _flops, _params = amd_get_gflops_params(model_name, block, num_classes, resolution=224, case=case, hidden_dim=hidden_dim)
             print("%s , %s | %.5f | %.5f" % (case, block, _flops, _params))
 
     

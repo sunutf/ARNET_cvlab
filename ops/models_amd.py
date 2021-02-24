@@ -478,13 +478,13 @@ class TSN_Amd(nn.Module):
             candidate_list = torch.cat([torch.zeros(batch_size, self.time_steps, 1), torch.ones(batch_size, self.time_steps, 1)], 2) #B, T, K
 
         candidate_log_list = []
-        skip_twice_list = []
+        all_policy_result_list = []
         take_bool = candidate_list[:,:,-1] > 0.5
         candidate_log_list.append(torch.tensor(take_bool, dtype=torch.float).cuda())
         
         if self.args.skip_twice:
-            take_bool = candidate_list[:,:,-2] > 0.5
-            skip_twice_list.append(torch.tensor(take_bool, dtype=torch.float).cuda())
+            take_bool = candidate_list > 0.5
+            all_policy_result_list.append(torch.tensor(take_bool, dtype=torch.float).cuda())
             
         if "tau" not in kwargs:
             kwargs["tau"] = None
@@ -505,13 +505,13 @@ class TSN_Amd(nn.Module):
               
                 candidate_log_list.append(candidate_list[:,:,-1])
                 if self.args.skip_twice:
-                    skip_twice_list.append(candidate_list[:,:,-2])
+                    all_policy_result_list.append(candidate_list)
 
         block_out = self.pass_last_fc_block('new_fc', _input)
 
         output = self.amd_combine_logits(candidate_list[:,:,-1], block_out, voter_list)
         if self.args.skip_twice:
-            return output.squeeze(1), torch.stack(candidate_log_list, dim=2), torch.stack(skip_twice_list, dim=2), None, block_out
+            return output.squeeze(1), torch.stack(candidate_log_list, dim=2), torch.stack(all_policy_result_list, dim=2), None, block_out
         else:
             return output.squeeze(1), torch.stack(candidate_log_list, dim=2), None, None, block_out
 

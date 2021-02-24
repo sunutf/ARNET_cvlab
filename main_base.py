@@ -565,8 +565,20 @@ def amd_init_gflops_table():
     """get gflops of block even it not using"""
     default_block_list = ["conv_2", "conv_3", "conv_4", "conv_5", "base"]
     default_case_list = ["cnn", "rnn"]
-
+    resize = int(args.rescale_to)
+   
     default_gflops_table[str(args.arch) + "base"] = \
+<<<<<<< HEAD
+                amd_get_gflops_params(args.arch, "base", num_class, resolution=resize, case="cnn", seg_len=seg_len)[0]
+    default_gflops_table[str(args.arch) + "base" + "fc"] = \
+                amd_get_gflops_params(args.arch, "base_fc", num_class, resolution=resize, case="cnn", seg_len=seg_len)[0]
+    for _block in default_block_list:
+        for _case in default_case_list:
+            default_gflops_table[str(args.arch) + _block + _case] = \
+                amd_get_gflops_params(args.arch, _block, num_class, resolution=resize, case=_case, hidden_dim = args.hidden_dim if _case is "rnn" else None, seg_len=seg_len)[0]
+    
+    print(default_gflops_table)
+=======
                 amd_get_gflops_params(args.arch, "base", num_class, resolution = resolution, case="cnn", seg_len=seg_len)[0]
     default_gflops_table[str(args.arch) + "base" + "fc"] = \
                 amd_get_gflops_params(args.arch, "base_fc", num_class, resolution = resolution, case="cnn", seg_len=seg_len)[0]
@@ -575,6 +587,7 @@ def amd_init_gflops_table():
             default_gflops_table[str(args.arch) + _block + _case] = \
                 amd_get_gflops_params(args.arch, _block, num_class, resolution = resolution, case=_case, hidden_dim = args.hidden_dim if _case is "rnn" else None, seg_len=seg_len)[0]
             
+>>>>>>> aa5c8bfca7502721ef501fd7661b3e2791d7be95
             
     """add gflops of unusing block to using block"""
     start = 0
@@ -627,7 +640,7 @@ def amd_get_gflops_t_tt_vector():
     return gflops_vec, t_vec, tt_vec #ex : (conv_2 skip, conv_3 skip, conv_4 skip, conv_5 skip, all_pass)
 
 
-def amd_cal_eff(r):
+def amd_cal_eff(r, all_policy_r):
     each_losses = []
     # TODO r N * T * (#which block exit, conv2/ conv_3/ conv_4/ conv_5/all)
     # r_loss : pass conv_2/ conv_3/ conv_4/ conv_5/ all
@@ -653,24 +666,47 @@ def amd_cal_eff(r):
 #         if_policy_backbone = 1 if args.policy_also_backbone else 0
 #         num_pred = len(args.backbone_list)
         policy_dim = len(args.block_rnn_list)
-
         reso_skip_vec = torch.zeros(policy_dim).cuda()
 
-        # TODO
-        offset = 0
-        for b_i in range(policy_dim):
-            reso_skip_vec[b_i] = torch.sum(r[:, :, b_i]) - torch.sum(r[:, :, b_i+1])
+        if args.skip_twice:
+            uniform_loss = 0
+            check_passed_block_bool = all_policy_r[:,:,:,-1] > 0.5
+            check_passed_block = torch.tensor(check_passed_block_bool, dtype=torch.float).cuda()
+            passed_block = check_passed_block.unsqueeze(-1).expand(-1,-1,-1,3) * all_policy_r  #all_policy_r : B, T, K, A (A = skip/ skip_twice/ pass)
+            
+            for k_i in range(all_policy_r.shape[-2]):
+                reso_skip_vec = torch.zeros(policy_dim).cuda()
+                for c_i in range(all_policy_r.shape[-1]):
+                    reso_skip_vec[c_i] = torch.sum(passed_block[:,:,k_i,c_i])
+                    
+                reso_skip_vec = reso_skip_vec / torch.sum(reso_skip_vec).clamp(min=1e-6)
+                
+                if args.uniform_cross_entropy:  # TODO cross-entropy+ logN
+                    uniform_loss = torch.sum(
+                        torch.tensor([x * torch.log(torch.clamp_min(x, 1e-6)) for x in reso_skip_vec])) + torch.log(
+                        torch.tensor(1.0 * len(reso_skip_vec)))
+                    uniform_loss += uniform_loss * args.uniform_loss_weight
+                else:  # TODO L2 norm
+                    usage_bias = reso_skip_vec - torch.mean(reso_skip_vec)
+                    uniform_loss += torch.norm(usage_bias, p=2) * args.uniform_loss_weight                
 
-        reso_skip_vec = reso_skip_vec / torch.sum(reso_skip_vec)
-        reso_skip_vec = 1 - reso_skip_vec
-        if args.uniform_cross_entropy:  # TODO cross-entropy+ logN
-            uniform_loss = torch.sum(
-                torch.tensor([x * torch.log(torch.clamp_min(x, 1e-6)) for x in reso_skip_vec])) + torch.log(
-                torch.tensor(1.0 * len(reso_skip_vec)))
-            uniform_loss = uniform_loss * args.uniform_loss_weight
-        else:  # TODO L2 norm
-            usage_bias = reso_skip_vec - torch.mean(reso_skip_vec)
-            uniform_loss = torch.norm(usage_bias, p=2) * args.uniform_loss_weight
+        else:
+            # TODO
+            offset = 0
+            for b_i in range(policy_dim):
+                reso_skip_vec[b_i] = torch.sum(r[:, :, b_i]) - torch.sum(r[:, :, b_i+1])
+
+            reso_skip_vec = reso_skip_vec / torch.sum(reso_skip_vec)
+            reso_skip_vec = 1 - reso_skip_vec #?
+            if args.uniform_cross_entropy:  # TODO cross-entropy+ logN
+                uniform_loss = torch.sum(
+                    torch.tensor([x * torch.log(torch.clamp_min(x, 1e-6)) for x in reso_skip_vec])) + torch.log(
+                    torch.tensor(1.0 * len(reso_skip_vec)))
+                uniform_loss = uniform_loss * args.uniform_loss_weight
+            else:  # TODO L2 norm
+                usage_bias = reso_skip_vec - torch.mean(reso_skip_vec)
+                uniform_loss = torch.norm(usage_bias, p=2) * args.uniform_loss_weight
+                
         loss = loss + uniform_loss
         each_losses.append(uniform_loss.detach().cpu().item())
 
@@ -872,9 +908,9 @@ def compute_acc_eff_loss_with_weights(acc_loss, eff_loss, each_losses, epoch):
     return acc_loss * acc_weight, eff_loss * eff_weight, [x * eff_weight for x in each_losses]
 
 
-def compute_every_losses(r, acc_loss, epoch):
+def compute_every_losses(r, all_policy_r, acc_loss, epoch):
     if args.ada_depth_skip :
-        eff_loss, each_losses = amd_cal_eff(r)
+        eff_loss, each_losses = amd_cal_eff(r, all_policy_r)
     else:
         eff_loss, each_losses = cal_eff(r)
     acc_loss, eff_loss, each_losses = compute_acc_eff_loss_with_weights(acc_loss, eff_loss, each_losses, epoch)
@@ -1056,26 +1092,26 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
             input_var_list = [torch.autograd.Variable(input_item) for input_item in input_tuple[:-1 + meta_offset]]
 
             if args.real_scsampler:
-                output, r, skip_twice_r, real_pred, lite_pred = model(input=input_var_list, tau=tau)
+                output, r, all_policy_r, real_pred, lite_pred = model(input=input_var_list, tau=tau)
                 if args.sal_rank_loss:
                     acc_loss = cal_sal_rank_loss(real_pred, lite_pred, target_var)
                 else:
                     acc_loss = get_criterion_loss(criterion, lite_pred.mean(dim=1), target_var)
             else:
                 if args.use_reinforce:
-                    output, r, skip_twice_r, r_log_prob, base_outs = model(input=input_var_list, tau=tau)
+                    output, r, all_policy_r, r_log_prob, base_outs = model(input=input_var_list, tau=tau)
                     acc_loss = get_criterion_loss(criterion, output, target_var)
                 else:
-                    output, r, skip_twice_r, feat_outs, base_outs = model(input=input_var_list, tau=tau)
+                    output, r, all_policy_r, feat_outs, base_outs = model(input=input_var_list, tau=tau)
                     acc_loss = get_criterion_loss(criterion, output, target_var)
 
             if use_ada_framework:
-                acc_loss, eff_loss, each_losses = compute_every_losses(r, acc_loss, epoch)
+                acc_loss, eff_loss, each_losses = compute_every_losses(r, all_policy_r, acc_loss, epoch)
                 if args.use_kld_loss:
-                    kld_loss = args.accuracy_weight/2 * get_criterion_loss(criterion, amd_cal_kld(output, r, base_outs), target_var)
+                    kld_loss = get_criterion_loss(criterion, amd_cal_kld(output, r, base_outs), target_var)
                     
                     kld_losses.update(kld_loss.item(), input.size(0))
-                
+                    
 
                 if args.use_reinforce and not args.freeze_policy:
                     if args.separated:
@@ -1128,9 +1164,14 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
 
                 for l_i, each_loss in enumerate(each_losses):
                     each_terms[l_i].update(each_loss, input.size(0))
+<<<<<<< HEAD
+            if args.use_kld_loss:
+                loss = acc_loss + eff_loss + args.accuracy_weight/2 * kld_loss
+=======
                     
             if args.use_kld_loss:
                 loss = acc_loss + eff_loss + kld_loss
+>>>>>>> aa5c8bfca7502721ef501fd7661b3e2791d7be95
             else:
                 loss = acc_loss + eff_loss
         else:
@@ -1163,6 +1204,7 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
         if use_ada_framework:
             r_list.append(r.detach().cpu().numpy())
             if args.skip_twice:
+                skip_twice_r = all_policy_r[:,:,:,-2]
                 skip_twice_r_list.append(skip_twice_r.detach().cpu().numpy())
 
         if i % args.print_freq == 0:
@@ -1282,26 +1324,26 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
             # compute output
             if args.ada_reso_skip or args.ada_depth_skip:
                 if args.real_scsampler:
-                    output, r, skip_twice_r, real_pred, lite_pred = model(input=input_tuple[:-1 + meta_offset], tau=tau)
+                    output, r, all_policy_r, real_pred, lite_pred = model(input=input_tuple[:-1 + meta_offset], tau=tau)
                     if args.sal_rank_loss:
                         acc_loss = cal_sal_rank_loss(real_pred, lite_pred, target)
                     else:
                         acc_loss = get_criterion_loss(criterion, lite_pred.mean(dim=1), target)
                 else:
                     if args.save_meta and args.save_all_preds:
-                        output, r, skip_twice_r, all_preds = model(input=input_tuple[:-1 + meta_offset], tau=tau)
+                        output, r, all_policy_r, all_preds = model(input=input_tuple[:-1 + meta_offset], tau=tau)
                         acc_loss = get_criterion_loss(criterion, output, target)
                     else:
                         if args.use_reinforce:
-                            output, r, skip_twice_r, r_log_prob, base_outs = model(input=input_tuple[:-1 + meta_offset], tau=tau)
+                            output, r, all_policy_r, r_log_prob, base_outs = model(input=input_tuple[:-1 + meta_offset], tau=tau)
                             acc_loss = get_criterion_loss(criterion, output, target)
                         else:
-                            output, r, skip_twice_r, feat_outs, base_outs = model(input=input_tuple[:-1 + meta_offset], tau=tau)
+                            output, r, all_policy_r, feat_outs, base_outs = model(input=input_tuple[:-1 + meta_offset], tau=tau)
                             acc_loss = get_criterion_loss(criterion, output, target)
                 if use_ada_framework:
-                    acc_loss, eff_loss, each_losses = compute_every_losses(r, acc_loss, epoch)
+                    acc_loss, eff_loss, each_losses = compute_every_losses(r, all_policy_r, acc_loss, epoch)
                     if args.use_kld_loss:
-                        kld_loss = args.accuracy_weight/2 * get_criterion_loss(criterion, amd_cal_kld(output, r, base_outs), target)
+                        kld_loss = get_criterion_loss(criterion, amd_cal_kld(output, r, base_outs), target)
                         kld_losses.update(kld_loss.item(), input.size(0))
                 
                     if args.use_reinforce and not args.freeze_policy:
@@ -1343,9 +1385,14 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                     elosses.update(eff_loss.item(), input.size(0))
                     for l_i, each_loss in enumerate(each_losses):
                         each_terms[l_i].update(each_loss, input.size(0))
+<<<<<<< HEAD
+                if args.use_kld_loss:
+                    loss = acc_loss + eff_loss + args.accuracy_weight/2 * kld_loss
+=======
                     
                 if args.use_kld_loss:
                     loss = acc_loss + eff_loss + kld_loss
+>>>>>>> aa5c8bfca7502721ef501fd7661b3e2791d7be95
                 else:
                     loss = acc_loss + eff_loss
             else:
@@ -1422,6 +1469,7 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
             if use_ada_framework:
                 r_list.append(r.cpu().numpy())
                 if args.skip_twice:
+                    skip_twice_r = all_policy_r[:,:,:,-2]
                     skip_twice_r_list.append(skip_twice_r.detach().cpu().numpy())
 
                 if args.save_meta:
