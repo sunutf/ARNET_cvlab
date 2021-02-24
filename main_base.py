@@ -1208,9 +1208,14 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
                 roh_r = reverse_onehot(r[-1, :, :].detach().cpu().numpy())
                 if args.skip_twice:
                     st_roh_r = reverse_onehot(skip_twice_r[-1, :, :].detach().cpu().numpy())
-                    print_output += '\n a_l {aloss.val:.4f} ({aloss.avg:.4f})\t e_l {eloss.val:.4f} ({eloss.avg:.4f})\t  r {r} st_r {st_r} pick {pick}'.format(
-                        aloss=alosses, eloss=elosses, r=elastic_list_print(roh_r), st_r=elastic_list_print(st_roh_r), pick = np.count_nonzero(roh_r == len(args.block_rnn_list)+1)
-                    )
+                    if args.use_kld_loss:
+                        print_output += '\n a_l {aloss.val:.4f} ({aloss.avg:.4f})\t e_l {eloss.val:.4f} ({eloss.avg:.4f})\t k_l {kld_loss.val:.4f} ({kld_loss.avg:.4f})\t r {r} st_r {st_r} pick {pick}'.format(
+                            aloss=alosses, eloss=elosses, kld_loss=kld_losses, r=elastic_list_print(roh_r), st_r=elastic_list_print(st_roh_r), pick = np.count_nonzero(roh_r == len(args.block_rnn_list)+1)
+                        )
+                    else:
+                        print_output += '\n a_l {aloss.val:.4f} ({aloss.avg:.4f})\t e_l {eloss.val:.4f} ({eloss.avg:.4f})\t  r {r} st_r {st_r} pick {pick}'.format(
+                            aloss=alosses, eloss=elosses, r=elastic_list_print(roh_r), st_r=elastic_list_print(st_roh_r), pick = np.count_nonzero(roh_r == len(args.block_rnn_list)+1)
+                        )
                 elif args.use_kld_loss:
                     print_output += '\n a_l {aloss.val:.4f} ({aloss.avg:.4f})\t e_l {eloss.val:.4f} ({eloss.avg:.4f})\t  k_l {kld_loss.val:.4f} ({kld_loss.avg:.4f})\t r {r} pick {pick}'.format(
                         aloss=alosses, eloss=elosses, kld_loss=kld_losses, r=elastic_list_print(roh_r), pick = np.count_nonzero(roh_r == len(args.block_rnn_list)+1)
