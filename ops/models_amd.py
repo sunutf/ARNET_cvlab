@@ -333,8 +333,9 @@ class TSN_Amd(nn.Module):
             hx = init_hidden(batch_size, self.args.hidden_dim)
             cx = init_hidden(batch_size, self.args.hidden_dim)
             
+            store_recent_pass_out = torch.zeros(batch_size, base_out.shape[-1], dtype=torch.long).cuda()
             store_recent_pass = torch.zeros(batch_size, 1, dtype=torch.long).cuda()
-            
+
             for t in range(self.time_steps):
                 old_r_t = candidate_list[:, t, :].cuda() #B, K
                 
@@ -352,12 +353,30 @@ class TSN_Amd(nn.Module):
                         
                         recent_base_out = torch.cat([base_out[b_i, store_recent_pass[b_i][-1]].unsqueeze(0) for b_i in range(batch_size)], dim=0)
                         rnn_input = torch.cat((rnn_input, (rnn_input - recent_base_out)), dim = 1)
+                    
+                    if self.args.diff_to_policy:
+                        cossim = torch.nn.CosineSimilarity(dim=1, eps=1e-6)
+                        relu = torch.nn.ReLU()
+                        
+                        cossim_outs = cossim(rnn_input, store_recent_pass_out).unsqueeze(-1)
+                        skip_action_outs = relu(cossim_outs)
+                        pass_action_outs = 1 - skip_action_outs
+                        diff_action_outs = skip_action_outs * torch.cat((skip_action_outs, pass_action_outs), dim=1)
+                        
 
-                    hx, cx = self.block_rnn_dict[name](rnn_input, (hx, cx))
-                    feat_t = hx
-                    p_t = torch.log(F.softmax(self.action_fc_dict[name](feat_t), dim=1).clamp(min=1e-8))
-                    r_t = torch.cat(
-                        [F.gumbel_softmax(p_t[b_i:b_i + 1], tau, True) for b_i in range(p_t.shape[0])])
+                        hx, cx = self.block_rnn_dict[name](rnn_input, (hx, cx))
+                        feat_t = hx
+                        p_t = torch.log(F.softmax(self.action_fc_dict[name](feat_t)+diff_action_outs, dim=1).clamp(min=1e-8))
+                        r_t = torch.cat(
+                            [F.gumbel_softmax(p_t[b_i:b_i + 1], tau, True) for b_i in range(p_t.shape[0])])
+                        
+                
+                    else:
+                        hx, cx = self.block_rnn_dict[name](rnn_input, (hx, cx))
+                        feat_t = hx
+                        p_t = torch.log(F.softmax(self.action_fc_dict[name](feat_t), dim=1).clamp(min=1e-8))
+                        r_t = torch.cat(
+                            [F.gumbel_softmax(p_t[b_i:b_i + 1], tau, True) for b_i in range(p_t.shape[0])])
                     
                     
                     if self.args.voting_policy:
@@ -381,6 +400,10 @@ class TSN_Amd(nn.Module):
                     take_old = torch.tensor(~take_bool, dtype=torch.float).cuda()
                     take_curr = torch.tensor(take_bool, dtype=torch.float).cuda()
                     r_t = old_r_t * take_old + r_t * take_curr
+                    
+                    check_to_store_bool = r_t[:,-1].unsqueeze(-1)>0.5
+                    check_to_store = torch.tensor(check_to_store_bool, dtype=torch.float).cuda()
+                    store_recent_pass_out = rnn_input * check_to_store
                     r_list.append(r_t)  # TODO as decision
                                                       
                     if old_hx is not None:

@@ -88,6 +88,8 @@ parser.add_argument('--voting_policy', action='store_true', help='voting activat
 parser.add_argument('--diff_to_rnn', action='store_true', help='give diff btw frames to rnn')
 parser.add_argument('--skip_twice', action='store_true', help='add skip twice policy')
 parser.add_argument('--use_kld_loss', action='store_true', help='kdl loss')
+parser.add_argument('--diff_to_policy', action='store_true', help='diff to policy ')
+
 
 
 
