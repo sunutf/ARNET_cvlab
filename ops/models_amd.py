@@ -10,7 +10,7 @@ from ops.amd_net_flops_table import feat_dim_of_res50_block
 
 from torch.distributions import Categorical
 import math
-from .transformer import TransformerModel, PositionalEncoding
+from .transformer import TransformerModel, PositionalEncoding, ScaledDotProductAttention
 import pdb
 
 def init_hidden(batch_size, cell_size):
@@ -126,7 +126,18 @@ class TSN_Amd(nn.Module):
 
         
         feat_dim = 2048   #getattr(self.base_model, 'fc').in_features
-        self.new_fc = make_a_linear(feat_dim, self.num_class)
+        if self.args.amd_consensus_type is 'lstm':
+            self.last_rnn = torch.nn.LSTMCell(input_size=feat_dim, hidden_size=feat_dim)
+            self.new_fc = make_a_linear(feat_dim, self.num_class)
+
+        
+        elif self.args.amd_consensus_type is 'attention':
+            self.att_fc = make_a_linear(feat_dim, 64)
+            self.new_fc = make_a_linear(64, self.num_class)
+        
+        else:
+            self.new_fc = make_a_linear(feat_dim, self.num_class)
+
     
     def _prepare_pos_encoding(self):
         for name in self.block_rnn_dict.keys() :
@@ -530,9 +541,28 @@ class TSN_Amd(nn.Module):
                 if self.args.skip_twice:
                     all_policy_result_list.append(candidate_list)
 
-        block_out = self.pass_last_fc_block('new_fc', _input)
-
-        output = self.amd_combine_logits(candidate_list[:,:,-1], block_out, voter_list)
+        
+        if self.args.amd_consensus_type is 'avg':
+            block_out = self.pass_last_fc_block('new_fc', _input)
+            output = self.amd_combine_logits(candidate_list[:,:,-1], block_out, voter_list)
+       
+        elif self.args.amd_consensus_type is 'lstm':
+            feat_dim = _input.shape[-1]
+            hx = init_hidden(batch_size, feat_dim)
+            cx = init_hidden(batch_size, feat_dim)
+            
+            for t in range(self.time_steps):
+                _rnn_input = _input[:, t] * candidate_list[:,t,-1].unsqueeze(-1)
+                hx, cx = self.last_rnn(_rnn_input, (hx, cx))
+            
+            output = self.pass_last_fc_block('new_fc', hx)
+             
+#         elif self.args.amd_consensus_type is 'attention':
+#             _att_input = _input[:, t] * candidate_list[:,t,-1].unsqueeze(-1)
+#             attention = ScaledDotProductAttention(temperature=64 ** 0.5)
+            
+            
+            
         if self.args.skip_twice:
             return output.squeeze(1), torch.stack(candidate_log_list, dim=2), torch.stack(all_policy_result_list, dim=2), None, block_out
         else:

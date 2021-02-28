@@ -80,8 +80,7 @@ parser.add_argument('--show_pred', action='store_true')
 # adaptive depth skipping(jhseon)
 parser.add_argument('--routing_weight', default=0., type=float)
 parser.add_argument('--ada_depth_skip', action='store_true', help='adaptively select depth of model')
-parser.add_argument('--block_rnn_list', default=['conv_2'], type=str, nargs=
-                    '+', help='adaptively select depth of model')
+parser.add_argument('--block_rnn_list', default=['conv_2'], type=str, nargs='+', help='adaptively select depth of model')
 parser.add_argument('--pe_at_rnn', action='store_true', help='position encoding activate at rnn')
 parser.add_argument('--amd_freeze_backbone', action='store_true', help='freeze backbone')
 parser.add_argument('--voting_policy', action='store_true', help='voting activate')
@@ -89,7 +88,7 @@ parser.add_argument('--diff_to_rnn', action='store_true', help='give diff btw fr
 parser.add_argument('--skip_twice', action='store_true', help='add skip twice policy')
 parser.add_argument('--use_kld_loss', action='store_true', help='kdl loss')
 parser.add_argument('--diff_to_policy', action='store_true', help='diff to policy ')
-
+parser.add_argument('--amd_consensus_type', type=str, default='avg')  
 
 
 
