@@ -204,7 +204,7 @@ class TSNDataSet(data.Dataset):
 
 
         process_data = self.transform(images)
-        if self.ada_reso_skip:
+        if self.ada_reso_skip :
             return_items = [process_data]
             if self.random_crop:
                 rescaled = [self.random_crop_proc(process_data, (x, x)) for x in self.reso_list[1:]]

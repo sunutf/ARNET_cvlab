@@ -42,9 +42,17 @@ echo "Using data path: ${DATA_DIR} and model path: ${MODEL_DIR}"
 #python -u main_base.py actnet RGB --arch resnet50 --num_segments 16 --npb --exp_header X --batch-size 48  -j 36 --gpus 0 1 2 3 --test_from ${MODEL_DIR}/exp7_res_uni_new.pth.tar --data_dir ${DATA_DIR} | tee tmp_log.txt
 #OUTPUT7=`cat tmp_log.txt | tail -n 3`
 
-#TODO 8. New S.O.T.A. AR-Net(resnet) using updated training logics (~76.8)
-python -u main_base.py actnet RGB --arch resnet50 --num_segments 16 --npb --exp_header X --ada_depth_skip --block_rnn_list conv_2 conv_3 conv_4 conv_5 --pe_at_rnn --accuracy_weight 0.95 --efficency_weight 0.05 --exp_decay --init_tau 0.000001 --use_gflops_loss --batch-size 48 -j 16 --gpus 0 1 2 3 --test_from ${MODEL_DIR}/amd_acc8_eff2.pth.tar --data_dir ${DATA_DIR} | tee tmp_log.txt 
-OUTPUT8=`cat tmp_log.txt | tail -n 3`
+# #TODO 8. New S.O.T.A. AR-Net(resnet) using updated training logics (~76.8)
+# python -u main_base.py actnet RGB --arch resnet50 --num_segments 16 --npb --exp_header X --ada_reso_skip --policy_backbone mobilenet_v2 --reso_list 224 168 112 84 --backbone_list resnet50 resnet34 resnet18 --skip_list 1 2 4 --accuracy_weight 0.9 --efficency_weight 0.1 --exp_decay --init_tau 0.000001 --policy_also_backbone --policy_input_offset 3 --uniform_loss_weight 3.0 --use_gflops_loss --batch-size 24 -j 16 --gpus 0 1 2 3 --save_meta --cnt_log /data/amd_cnt_log --test_from ${MODEL_DIR}/exp8_res_ada_new.pth.tar --data_dir ${DATA_DIR} | tee tmp_log.txt
+# OUTPUT8=`cat tmp_log.txt | tail -n 3`
+
+#TODO 9. New S.O.T.A. AR-Net(resnet) using updated training logics (~76.8)
+python -u main_base.py actnet RGB --arch resnet50 --num_segments 16 --npb --exp_header X --ada_depth_skip --block_rnn_list conv_2 conv_3 conv_4 conv_5 --rescale_to 192 --accuracy_weight 0.95 --efficency_weight 0.05 --exp_decay --init_tau 0.000001 --use_gflops_loss --batch-size 24 -j 16 --gpus 0 1 2 3 --test_from ${MODEL_DIR}/amd_acc95_eff5_192_24.pth.tar --save_meta --cnt_log /data/amd_cnt_log --data_dir ${DATA_DIR} | tee tmp_log.txt 
+# OUTPUT9=`cat tmp_log.txt | tail -n 3`
+
+# #TODO 10. New S.O.T.A. AR-Net(resnet) using updated training logics (~76.8)
+# python -u main_base.py actnet RGB --arch resnet50 --num_segments 16 --npb --exp_header X --ada_depth_skip --block_rnn_list conv_2 conv_3 conv_4 conv_5 --accuracy_weight 0.8 --efficency_weight 0.2 --exp_decay --init_tau 0.000001 --use_gflops_loss --batch-size 48 -j 16 --gpus 0 1 2 3  --test_from ${MODEL_DIR}/amd_acc8_eff2.pth.tar --data_dir ${DATA_DIR} | tee tmp_log.txt
+# OUTPUT10=`cat tmp_log.txt | tail -n 3`
 
  #echo -e "\n\033[1;36mEXPECT   : 73.830 (exp0_res_ada)\033[0m"
  #echo $OUTPUT0
@@ -62,5 +70,9 @@ OUTPUT8=`cat tmp_log.txt | tail -n 3`
 # echo $OUTPUT6
 # echo -e "\n\033[1;36mEXPECT   : 75.589 (exp7_res_uni_new)\033[0m"
 # echo $OUTPUT7
-echo -e "\n\033[1;36mEXPECT   : 76.791 (exp8_res_ada_new)\033[0m"
-echo $OUTPUT8
+# echo -e "\n\033[1;36mEXPECT   : 76.791 (exp8_res_ada_new)\033[0m"
+# echo $OUTPUT8
+echo -e "\n\033[1;36mEXPECT   : 76.791 (exp9_amd_new)\033[0m"
+echo $OUTPUT9
+# echo -e "\n\033[1;36mEXPECT   : 76.791 (exp9_amd_new)\033[0m"
+# echo $OUTPUT10

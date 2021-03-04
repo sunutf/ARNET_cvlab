@@ -1271,6 +1271,28 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                 visual_log_txt_path = ospj(visual_log_path, "visual_log.txt")
             visual_log = open(visual_log_txt_path, "w")
 
+
+        except OSError as e:
+            if e.errno != errno.EEXIST:
+                print("Failed to create directory!!!")
+                raise
+                
+    if args.cnt_log != '':
+        try:
+            if not(os.path.isdir(args.cnt_log)):
+               os.makedirs(ospj(args.cnt_log))
+
+            cnt_log_path = args.cnt_log
+            if args.ada_depth_skip :
+                cnt_log_txt_path = ospj(cnt_log_path, "amd_cnt_log.txt")
+            else:
+                cnt_log_txt_path = ospj(cnt_log_path, "cnt_log.txt")
+            cnt_log = open(cnt_log_txt_path, "w")
+            input_result_dict = {}
+            total_cnt_dict = {}
+            target_dict = {}
+
+
         except OSError as e:
             if e.errno != errno.EEXIST:
                 print("Failed to create directory!!!")
@@ -1381,7 +1403,26 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
             else:
                 output = model(input=[input])
                 loss = get_criterion_loss(criterion, output, target)
-
+            
+            if args.cnt_log != '':
+                target_vals = target.cpu().numpy()
+                output_vals = output.max(dim=1)[1].cpu().numpy()
+                
+                for i in range(len(target_vals)):
+                    target_val = target_vals[i][0]
+                    output_val = output_vals[i]
+                    input_path = os.path.join(args.root_path, input_tuple[meta_offset-1][i])
+                    
+                    if input_path in input_result_dict:
+                        if target_val == output_val:
+                            input_result_dict[input_path] +=1
+                        total_cnt_dict[input_path] +=1
+                    else:
+                        input_result_dict[input_path] = 1 if target_val == output_val else 0
+                        total_cnt_dict[input_path] = 1
+                        target_dict[input_path] = output_val
+                   
+                
             if args.visual_log != '':
                 target_val = target.cpu().numpy()[0][0]
                 output_val = output.max(dim=1)[1].cpu().numpy()[0]
@@ -1547,7 +1588,21 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
         tf_writer.add_scalar('acc/test_top1', top1.avg, epoch)
         tf_writer.add_scalar('acc/test_top5', top5.avg, epoch)
 
-
+    
+    if args.cnt_log != '':
+        for k,v in input_result_dict.items():
+            cnt_log.write(str(k))
+            cnt_log.write(',')
+            cnt_log.write(str(target_dict[k]))
+            cnt_log.write(',')
+            cnt_log.write(str(v))
+            cnt_log.write(',')
+            cnt_log.write(str(total_cnt_dict[k]))
+            cnt_log.write('\n')
+            
+            
+        cnt_log.close()
+    
     if args.visual_log != '':
         visual_log.close()
 

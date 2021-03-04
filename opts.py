@@ -7,7 +7,6 @@ parser.add_argument('--train_list', type=str, default="")
 parser.add_argument('--val_list', type=str, default="")
 parser.add_argument('--root_path', type=str, default="")
 parser.add_argument('--store_name', type=str, default="")
-parser.add_argument('--visual_log', type=str, default="")
 # ========================= Model Configs ==========================
 parser.add_argument('--arch', type=str, default="BNInception")
 parser.add_argument('--num_segments', type=int, default=3)
@@ -88,7 +87,10 @@ parser.add_argument('--diff_to_rnn', action='store_true', help='give diff btw fr
 parser.add_argument('--skip_twice', action='store_true', help='add skip twice policy')
 parser.add_argument('--use_kld_loss', action='store_true', help='kdl loss')
 parser.add_argument('--diff_to_policy', action='store_true', help='diff to policy ')
-parser.add_argument('--amd_consensus_type', type=str, default='avg')  
+parser.add_argument('--amd_consensus_type', type=str, default='avg') 
+parser.add_argument('--visual_log', type=str, default="")
+parser.add_argument('--cnt_log', type=str, default="")  
+
 
 
 

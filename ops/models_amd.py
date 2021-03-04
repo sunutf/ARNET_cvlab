@@ -126,12 +126,12 @@ class TSN_Amd(nn.Module):
 
         
         feat_dim = 2048   #getattr(self.base_model, 'fc').in_features
-        if self.args.amd_consensus_type is 'lstm':
+        if self.args.amd_consensus_type == "lstm":
             self.last_rnn = torch.nn.LSTMCell(input_size=feat_dim, hidden_size=feat_dim)
             self.new_fc = make_a_linear(feat_dim, self.num_class)
 
         
-        elif self.args.amd_consensus_type is 'attention':
+        elif self.args.amd_consensus_type == "attention":
             self.att_fc = make_a_linear(feat_dim, 64)
             self.new_fc = make_a_linear(64, self.num_class)
         
@@ -452,7 +452,28 @@ class TSN_Amd(nn.Module):
         avgpool = torch.nn.AdaptiveAvgPool2d(output_size=(1, 1))
         input_data = avgpool(input_data)
         input_data = torch.nn.Dropout(p=self.dropout)(input_data).squeeze(-1).squeeze(-1)
-        return self.block_fc_backbone(name, input_data, self.new_fc) 
+        return self.block_fc_backbone(name, input_data, self.new_fc)
+    
+    def pass_last_rnn_block(self, name, input_data, candidate):
+        avgpool = torch.nn.AdaptiveAvgPool2d(output_size=(1, 1))
+
+        input_data = avgpool(input_data)
+        input_data = torch.nn.Dropout(p=self.dropout)(input_data).squeeze(-1).squeeze(-1)
+        
+        
+        _bt = input_data.shape[0]
+        _b, _t = _bt // self.time_steps, self.time_steps
+        _input_data = input_data.view(_b, _t, -1)
+        feat_dim = _input_data.shape[-1]
+
+        hx = init_hidden(_b, feat_dim)
+        cx = init_hidden(_b, feat_dim)
+        
+        for t in range(self.time_steps):
+            _rnn_input = _input_data[:, t] * candidate[:,t,-1].unsqueeze(-1)
+            hx, cx = self.last_rnn(_rnn_input, (hx, cx))
+
+        return self.new_fc(hx)
                    
                    
     
@@ -541,21 +562,13 @@ class TSN_Amd(nn.Module):
                 if self.args.skip_twice:
                     all_policy_result_list.append(candidate_list)
 
-        
-        if self.args.amd_consensus_type is 'avg':
+        if self.args.amd_consensus_type == "avg":
             block_out = self.pass_last_fc_block('new_fc', _input)
             output = self.amd_combine_logits(candidate_list[:,:,-1], block_out, voter_list)
        
-        elif self.args.amd_consensus_type is 'lstm':
-            feat_dim = _input.shape[-1]
-            hx = init_hidden(batch_size, feat_dim)
-            cx = init_hidden(batch_size, feat_dim)
-            
-            for t in range(self.time_steps):
-                _rnn_input = _input[:, t] * candidate_list[:,t,-1].unsqueeze(-1)
-                hx, cx = self.last_rnn(_rnn_input, (hx, cx))
-            
-            output = self.pass_last_fc_block('new_fc', hx)
+        elif self.args.amd_consensus_type == "lstm":
+            block_out = None
+            output = self.pass_last_rnn_block('new_fc', _input, candidate_list)
              
 #         elif self.args.amd_consensus_type is 'attention':
 #             _att_input = _input[:, t] * candidate_list[:,t,-1].unsqueeze(-1)

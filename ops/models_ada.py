@@ -435,16 +435,16 @@ class TSN_Ada(nn.Module):
             base_out_list.append(torch.stack(lite_j_list, dim=1))
 
         if self.args.offline_lstm_last:  # TODO(yue) no policy - use policy net as backbone - just LSTM(last)
-            return lite_j_list[-1].squeeze(1), None, None, None
+            return lite_j_list[-1].squeeze(1), None, None, None, None
 
         elif self.args.offline_lstm_all:  # TODO(yue) no policy - use policy net as backbone - just LSTM(average)
-            return torch.stack(lite_j_list).mean(dim=0).squeeze(1), None, None, None
+            return torch.stack(lite_j_list).mean(dim=0).squeeze(1), None, None, None, None
 
         elif self.args.real_scsampler:
             real_pred = base_out_list[0]
             lite_pred = torch.stack(lite_j_list, dim=1)
             output, ind = self.consensus(real_pred, lite_pred)
-            return output.squeeze(1), ind, real_pred, lite_pred
+            return output.squeeze(1), ind, None, real_pred, lite_pred
 
         else:
             if self.args.random_policy:  # TODO(yue) random policy
@@ -456,12 +456,12 @@ class TSN_Ada(nn.Module):
                 r_all = torch.ones(batch_size, self.time_steps, self.action_dim).cuda()
             output = self.combine_logits(r_all, base_out_list, ind_list)
             if self.args.save_meta and self.args.save_all_preds:
-                return output.squeeze(1), r_all, torch.stack(base_out_list, dim=1)
+                return output.squeeze(1), r_all, None, torch.stack(base_out_list, dim=1)
             else:
                 if self.args.use_reinforce:
-                    return output.squeeze(1), r_all, r_log_prob, torch.stack(base_out_list, dim=1)
+                    return output.squeeze(1), r_all, None, r_log_prob, torch.stack(base_out_list, dim=1)
                 else:
-                    return output.squeeze(1), r_all, None, torch.stack(base_out_list, dim=1)
+                    return output.squeeze(1), r_all, None, None, torch.stack(base_out_list, dim=1)
 
     def combine_logits(self, r, base_out_list, ind_list):
         # TODO r                N, T, K
