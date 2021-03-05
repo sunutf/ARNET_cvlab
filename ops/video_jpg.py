@@ -41,10 +41,11 @@ if __name__ == "__main__":
     if args.file_list == "":
         file_names = sorted(os.listdir(dir_path))
     else:
-        file_names = [x.strip() for x in open(args.file_list).readlines()]
+        _file_names = [x.strip() for x in open(args.file_list).readlines()]
 
         if args.dataset == 'minik':
-            file_names = [re.split('/',x)[0] + '/' + re.split(' ', re.split('/',x)[1])[0] + '.mp4' for x in file_names]
+            file_names = [re.split('/',x)[0] if len(re.split(' ', re.split('/',x)[0])) is 1 else (re.split(' ', re.split('/',x)[0])[0] + ' ' + re.split(' ', re.split('/',x)[0])[1])  + '/' + re.split(' ', re.split('/',x)[1])[0] + '.mp4' for x in _file_names]
+
     del_list = []
     for i, file_name in enumerate(file_names):
         if not any([x in file_name for x in args.accepted_formats]):
@@ -54,29 +55,35 @@ if __name__ == "__main__":
     print("%d videos to handle (after %d being removed)" % (len(file_names), len(del_list)))
     cmd_list = []
     for file_name in tqdm(file_names):
-        name, ext = os.path.splitext(file_name)
-        dst_directory_path = os.path.join(dst_dir_path, name)
 
-        video_file_path = os.path.join(dir_path, file_name)
-        print(video_file_path)
-        if not os.path.exists(video_file_path):
+        name, ext = os.path.splitext(file_name)
+        
+        dst_directory_path = os.path.join(dst_dir_path, name)
+        video_file_path = os.path.join(dir_path, file_name)   
+        if not os.path.exists(dst_directory_path):
+            os.makedirs(dst_directory_path, exist_ok=True)
+
+        if not os.path.isfile(video_file_path):
             print("EMPTY!!!")
             empty_video_list.append(video_file_path)
         
-        if not os.path.exists(dst_directory_path):
-            os.makedirs(dst_directory_path, exist_ok=True)
+#         if len(os.listdir(dst_directory_path)) != 0:
+#             continue
         
-        
-        if len(os.listdir(dst_directory_path)) != 0:
-            continue
+        if args.dataset == 'minik':
+            file_name = re.split('/',name)[0] if len(re.split(' ', re.split('/',name)[0])) is 1 else (re.split(' ', re.split('/',name)[0])[0] + '\ ' + re.split(' ', re.split('/',name)[0])[1])  + '/' + re.split(' ', re.split('/',name)[1])[0] + ".mp4"
+            
+            name = re.split('.mp4', file_name)[0]
+            dst_directory_path = os.path.join(dst_dir_path, name)
+            video_file_path = os.path.join(dir_path, file_name)
 
-#         print(len((os.listdir(dst_directory_path))))
 #         print(dst_directory_path)
         if args.frame_rate > 0:
             frame_rate_str = "-r %d" % args.frame_rate
         else:
             frame_rate_str = ""
-            cmd = 'ffmpeg -nostats -loglevel 0 -i {} -vf scale=-1:360 {} {}/{}'.format(video_file_path, frame_rate_str,
+        
+        cmd = 'ffmpeg -nostats -loglevel 0 -i {} -vf scale=-1:360 {} {}/{}'.format(video_file_path, frame_rate_str,
                                                                        dst_directory_path, args.prefix)
         if not args.parallel:
             if args.dry_run:
