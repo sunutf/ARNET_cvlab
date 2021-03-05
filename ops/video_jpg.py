@@ -5,6 +5,7 @@ import subprocess
 from tqdm import tqdm
 import argparse
 from multiprocessing import Pool
+import re
 
 parser = argparse.ArgumentParser(description="Dataset processor: Video->Frames")
 parser.add_argument("dir_path", type=str, help="original dataset path")
@@ -19,6 +20,8 @@ parser.add_argument("--frame_rate", type=int, default=-1)
 parser.add_argument("--num_workers", type=int, default=16)
 parser.add_argument("--dry_run", action="store_true")
 parser.add_argument("--parallel", action="store_true")
+parser.add_argument("--dataset", type=str, default="activitynet", help="dataset activitynet/ minik/ fcvid")
+
 args = parser.parse_args()
 
 
@@ -33,11 +36,15 @@ if __name__ == "__main__":
     t0 = time.time()
     dir_path = args.dir_path
     dst_dir_path = args.dst_dir_path
-
+   
+    empty_video_list = []
     if args.file_list == "":
         file_names = sorted(os.listdir(dir_path))
     else:
         file_names = [x.strip() for x in open(args.file_list).readlines()]
+
+        if args.dataset == 'minik':
+            file_names = [re.split('/',x)[0] + '/' + re.split(' ', re.split('/',x)[1])[0] + '.mp4' for x in file_names]
     del_list = []
     for i, file_name in enumerate(file_names):
         if not any([x in file_name for x in args.accepted_formats]):
@@ -51,14 +58,20 @@ if __name__ == "__main__":
         dst_directory_path = os.path.join(dst_dir_path, name)
 
         video_file_path = os.path.join(dir_path, file_name)
+        print(video_file_path)
+        if not os.path.exists(video_file_path):
+            print("EMPTY!!!")
+            empty_video_list.append(video_file_path)
+        
         if not os.path.exists(dst_directory_path):
             os.makedirs(dst_directory_path, exist_ok=True)
-
+        
+        
         if len(os.listdir(dst_directory_path)) != 0:
             continue
 
-        print(len((os.listdir(dst_directory_path))))
-        print(dst_directory_path)
+#         print(len((os.listdir(dst_directory_path))))
+#         print(dst_directory_path)
         if args.frame_rate > 0:
             frame_rate_str = "-r %d" % args.frame_rate
         else:
@@ -79,4 +92,7 @@ if __name__ == "__main__":
                     pbar.update()
     t1 = time.time()
     print("Finished in %.4f seconds" % (t1 - t0))
+    print("empty video list")
+    print(empty_video_list)
+    print(len(empty_video_list))
     os.system("stty sane")
