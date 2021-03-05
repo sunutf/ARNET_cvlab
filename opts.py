@@ -87,6 +87,8 @@ parser.add_argument('--diff_to_rnn', action='store_true', help='give diff btw fr
 parser.add_argument('--skip_twice', action='store_true', help='add skip twice policy')
 parser.add_argument('--use_kld_loss', action='store_true', help='kdl loss')
 parser.add_argument('--diff_to_policy', action='store_true', help='diff to policy ')
+parser.add_argument('--use_distil_loss', action='store_true', help='diff to policy ')
+
 parser.add_argument('--amd_consensus_type', type=str, default='avg') 
 parser.add_argument('--visual_log', type=str, default="")
 parser.add_argument('--cnt_log', type=str, default="")  
