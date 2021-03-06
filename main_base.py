@@ -348,8 +348,7 @@ def main():
                 base_model_index = i
                 new_i = i
                 
-                if i == 0 :
-                    sd = amd_load_to_sd(model_dict, tmp_path, "base_model_list.%d" % base_model_index, "new_fc_list.%d" % new_i, 224)
+                sd = amd_load_to_sd(model_dict, tmp_path, "base_model_list.%d" % base_model_index, "new_fc_list.%d" % new_i, 224)
                 
                 model_dict.update(sd)
             model.load_state_dict(model_dict)
@@ -380,13 +379,18 @@ def main():
                             args.reso_list[args.policy_input_offset])
             model_dict.update(sd)
             # TODO(yue) backbones
+            prev_path = None
             for i, tmp_path in enumerate(args.model_paths):
                 base_model_index = i
                 new_i = i
                 
-                if i == 0 :
-                    sd = load_to_sd(model_dict, tmp_path, "base_model_list.%d" % base_model_index, "new_fc_list.%d" % new_i, args.reso_list[i])
+#                 if i == 0 :
+#                     sd = load_to_sd(model_dict, tmp_path, "base_model_list.%d" % base_model_index, "new_fc_list.%d" % new_i, args.reso_list[i])
+                if prev_path == tmp_path:
+                    continue
                 
+                sd = load_to_sd(model_dict, tmp_path, "base_model_list.%d" % base_model_index, "new_fc_list.%d" % new_i, args.reso_list[i])
+                prev_path = tmp_path
                 model_dict.update(sd)
             model.load_state_dict(model_dict)
     
@@ -755,18 +759,27 @@ def amd_cal_kld(output, r, base_outs):
 def init_gflops_table():
     global gflops_table
     gflops_table = {}
+    params_table = {}
     seg_len = -1
 
     for i, backbone in enumerate(args.backbone_list):
         gflops_table[backbone + str(args.reso_list[i])] = \
             get_gflops_params(backbone, args.reso_list[i], num_class, seg_len)[0]
+        params_table[backbone + str(args.reso_list[i])] = \
+            get_gflops_params(backbone, args.reso_list[i], num_class, seg_len)[1]
     gflops_table["policy"] = \
         get_gflops_params(args.policy_backbone, args.reso_list[args.policy_input_offset], num_class, seg_len)[0]
+    params_table["policy"] = \
+        get_gflops_params(args.policy_backbone, args.reso_list[args.policy_input_offset], num_class, seg_len)[1]
     gflops_table["lstm"] = 2 * (feat_dim_dict[args.policy_backbone] ** 2) / 1000000000
 
     print("gflops_table: ")
     for k in gflops_table:
         print("%-20s: %.4f GFLOPS" % (k, gflops_table[k]))
+        
+    print("params_table: ")
+    for k in params_table:
+        print("%-20s: %.4f params" % (k, params_table[k]))
 
 
 def get_gflops_t_tt_vector():
