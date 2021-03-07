@@ -8,6 +8,7 @@ import time
 import torch.nn.parallel
 import torch.backends.cudnn as cudnn
 import torch.optim
+import torch.nn.functional as F
 from torch.nn.utils import clip_grad_norm_
 import math
 
@@ -886,7 +887,24 @@ def reverse_onehot(a):
             print(i, r)
         return None
 
-
+def confidence_criterion_loss(criterion, all_policy_r, feat_outs, target):
+    # all_policy_r B,T,K,A
+    # feat_outs B,T,K,#class
+    conf_loss = 0
+    _feat_outs = F.softmax(feat_outs, dim=-1)
+    _target = target[:,0]
+    for b_i in range(feat_outs.shape[0]):
+        conf_outs = _feat_outs[b_i,:,:,_target[b_i]]
+        diff_conf_l = []
+        for k_i in range(1, feat_outs.shape[2]):
+            diff_conf_l.append(conf_outs[:,k_i] - conf_outs[:,k_i-1])
+        
+        target_pass_bool = torch.stack(diff_conf_l, dim=1) > 0  #T,K-1
+        target_policy = torch.tensor(target_pass_bool, dtype=torch.long).cuda()
+        
+        for k_i in range(feat_outs.shape[2]-1):
+            conf_loss += criterion(all_policy_r[b_i,:,k_i,:], target_policy[:,k_i])
+    return conf_loss
 
 def get_criterion_loss(criterion, output, target):
     return criterion(output, target[:, 0])
@@ -1113,8 +1131,10 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
                     kld_loss = get_criterion_loss(criterion, amd_cal_kld(output, r, base_outs), target_var)
                     
                     kld_losses.update(kld_loss.item(), input.size(0))
+                if args.use_conf_btw_blocks:
+                    conf_loss = args.conf_weight * confidence_criterion_loss(criterion, all_policy_r, feat_outs, target_var)
                     
-
+                    kld_losses.update(conf_loss.item(), input.size(0))
                 if args.use_reinforce and not args.freeze_policy:
                     if args.separated:
                         acc_loss_items = []
@@ -1229,7 +1249,7 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
                         print_output += '\n a_l {aloss.val:.4f} ({aloss.avg:.4f})\t e_l {eloss.val:.4f} ({eloss.avg:.4f})\t  r {r} st_r {st_r} pick {pick}'.format(
                             aloss=alosses, eloss=elosses, r=elastic_list_print(roh_r), st_r=elastic_list_print(st_roh_r), pick = np.count_nonzero(roh_r == len(args.block_rnn_list)+1)
                         )
-                elif args.use_kld_loss:
+                elif args.use_kld_loss or args.use_conf_btw_blocks:
                     print_output += '\n a_l {aloss.val:.4f} ({aloss.avg:.4f})\t e_l {eloss.val:.4f} ({eloss.avg:.4f})\t  k_l {kld_loss.val:.4f} ({kld_loss.avg:.4f})\t r {r} pick {pick}'.format(
                         aloss=alosses, eloss=elosses, kld_loss=kld_losses, r=elastic_list_print(roh_r), pick = np.count_nonzero(roh_r == len(args.block_rnn_list)+1)
                     )
@@ -1369,6 +1389,11 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                     if args.use_kld_loss:
                         kld_loss = get_criterion_loss(criterion, amd_cal_kld(output, r, base_outs), target)
                         kld_losses.update(kld_loss.item(), input.size(0))
+                        
+                    elif args.use_conf_btw_blocks:
+                        conf_loss = args.conf_weight * confidence_criterion_loss(criterion, all_policy_r, feat_outs, target_var)
+                    
+                        kld_losses.update(conf_loss.item(), input.size(0))
                 
                     if args.use_reinforce and not args.freeze_policy:
                         if args.separated:
@@ -1529,7 +1554,7 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                         print_output += ' \n a_l {aloss.val:.4f} ({aloss.avg:.4f})\t e_l {eloss.val:.4f} ({eloss.avg:.4f})\t  r {r} st_r {st_r} pick {pick}'.format(
                             aloss=alosses, eloss=elosses, r=elastic_list_print(roh_r), st_r=elastic_list_print(st_roh_r), pick = np.count_nonzero(roh_r == len(args.block_rnn_list)+1)
                         )
-                    elif args.use_kld_loss:
+                    elif args.use_kld_loss or args.use_conf_btw_blocks:
                         print_output += '\n a_l {aloss.val:.4f} ({aloss.avg:.4f})\t e_l {eloss.val:.4f} ({eloss.avg:.4f})\t  k_l {kld_loss.val:.4f} ({kld_loss.avg:.4f})\t r {r} pick {pick}'.format(
                         aloss=alosses, eloss=elosses, kld_loss=kld_losses, r=elastic_list_print(roh_r), pick = np.count_nonzero(roh_r == len(args.block_rnn_list)+1)
                     )
