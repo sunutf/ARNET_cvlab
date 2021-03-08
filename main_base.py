@@ -1128,13 +1128,13 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
             if use_ada_framework:
                 acc_loss, eff_loss, each_losses = compute_every_losses(r, all_policy_r, acc_loss, epoch)
                 if args.use_kld_loss:
-                    kld_loss = get_criterion_loss(criterion, amd_cal_kld(output, r, base_outs), target_var)
+                    kld_loss = args.accuracy_wieght/2 * get_criterion_loss(criterion, amd_cal_kld(output, r, base_outs), target_var)
                     
                     kld_losses.update(kld_loss.item(), input.size(0))
                 if args.use_conf_btw_blocks:
-                    conf_loss = args.conf_weight * confidence_criterion_loss(criterion, all_policy_r, feat_outs, target_var)
+                    kld_loss = args.conf_weight * confidence_criterion_loss(criterion, all_policy_r, feat_outs, target_var)
                     
-                    kld_losses.update(conf_loss.item(), input.size(0))
+                    kld_losses.update(kld_loss.item(), input.size(0))
                 if args.use_reinforce and not args.freeze_policy:
                     if args.separated:
                         acc_loss_items = []
@@ -1186,9 +1186,10 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
 
                 for l_i, each_loss in enumerate(each_losses):
                     each_terms[l_i].update(each_loss, input.size(0))
-
-            if args.use_kld_loss:
-                loss = acc_loss + eff_loss + args.accuracy_weight/2 * kld_loss
+            
+            
+            if args.use_kld_loss or args.use_conf_btw_blocks:
+                loss = acc_loss + eff_loss + kld_loss
             else:
                 loss = acc_loss + eff_loss
         else:
@@ -1387,13 +1388,13 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                 if use_ada_framework:
                     acc_loss, eff_loss, each_losses = compute_every_losses(r, all_policy_r, acc_loss, epoch)
                     if args.use_kld_loss:
-                        kld_loss = get_criterion_loss(criterion, amd_cal_kld(output, r, base_outs), target)
+                        kld_loss = args.accuracy_weight/2 * get_criterion_loss(criterion, amd_cal_kld(output, r, base_outs), target)
                         kld_losses.update(kld_loss.item(), input.size(0))
                         
                     elif args.use_conf_btw_blocks:
-                        conf_loss = args.conf_weight * confidence_criterion_loss(criterion, all_policy_r, feat_outs, target_var)
+                        kld_loss = args.conf_weight * confidence_criterion_loss(criterion, all_policy_r, feat_outs, target)
                     
-                        kld_losses.update(conf_loss.item(), input.size(0))
+                        kld_losses.update(kld_loss.item(), input.size(0))
                 
                     if args.use_reinforce and not args.freeze_policy:
                         if args.separated:
@@ -1434,10 +1435,10 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                     elosses.update(eff_loss.item(), input.size(0))
                     for l_i, each_loss in enumerate(each_losses):
                         each_terms[l_i].update(each_loss, input.size(0))
-                if args.use_kld_loss:
-                    loss = acc_loss + eff_loss + args.accuracy_weight/2 * kld_loss
+                if args.use_kld_loss or args.use_conf_btw_blocks:
+                    loss = acc_loss + eff_loss + kld_loss
                 else:
-                    loss = acc_loss + eff_loss
+                    loss = acc_loss + eff_loss 
             else:
                 output = model(input=[input])
                 loss = get_criterion_loss(criterion, output, target)
