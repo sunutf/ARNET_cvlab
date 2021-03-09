@@ -1592,7 +1592,7 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                         )
                     
                     elif args.use_conf_btw_blocks:
-                        print_output += '\n a_l {aloss.val:.4f} ({aloss.avg:.4f})\t e_l {eloss.val:.4f} ({eloss.avg:.4f})\t  i_a_l {inner_alss.val:.4f} ({inner_aloss.avg:.4f})\t  p_g_l {p_g_loss.val:.4f} ({p_g_loss.avg:.4f})\tr {r} pick {pick}'.format(aloss=alosses, eloss=elosses, inner_aloss=inner_alosses, p_g_loss=policy_gt_losses, r=elastic_list_print(roh_r), pick = np.count_nonzero(roh_r == len(args.block_rnn_list)+1)
+                        print_output += '\n a_l {aloss.val:.4f} ({aloss.avg:.4f})\t e_l {eloss.val:.4f} ({eloss.avg:.4f})\t  i_a_l {inner_aloss.val:.4f} ({inner_aloss.avg:.4f})\t  p_g_l {p_g_loss.val:.4f} ({p_g_loss.avg:.4f})\tr {r} pick {pick}'.format(aloss=alosses, eloss=elosses, inner_aloss=inner_alosses, p_g_loss=policy_gt_losses, r=elastic_list_print(roh_r), pick = np.count_nonzero(roh_r == len(args.block_rnn_list)+1)
                         )
                     else:
                         print_output += '\n a_l {aloss.val:.4f} ({aloss.avg:.4f})\t e_l {eloss.val:.4f} ({eloss.avg:.4f})\t  r {r} pick {pick}'.format(
