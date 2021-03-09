@@ -1217,16 +1217,18 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
             input_var = torch.autograd.Variable(input)
             output = model(input=[input_var])
             loss = get_criterion_loss(criterion, output, target_var)
-            
+        
+         # measure accuracy and record loss
+        prec1, prec5 = accuracy(output.data, target[:, 0], topk=(1, 5))
+        losses.update(loss.item(), input.size(0))
+        top1.update(prec1.item(), input.size(0))
+        top5.update(prec5.item(), input.size(0))
+        
+        
         if (i+1) % accumulation_steps == 0:
             total_loss = (total_loss + loss)/accumulation_steps
         
-            # measure accuracy and record loss
-            prec1, prec5 = accuracy(output.data, target[:, 0], topk=(1, 5))
-            losses.update(loss.item(), input.size(0))
-            top1.update(prec1.item(), input.size(0))
-            top5.update(prec5.item(), input.size(0))
-
+           
             # compute gradient and do SGD step
             if args.use_reinforce and not args.freeze_policy:
                 intended_loss.backward()
@@ -1485,27 +1487,15 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                 output = model(input=[input])
                 loss = get_criterion_loss(criterion, output, target)
                 
-                
+            
+             # measure accuracy and record loss
+            prec1, prec5 = accuracy(output.data, target[:, 0], topk=(1, 5))
+            losses.update(loss.item(), input.size(0))
+            top1.update(prec1.item(), input.size(0))
+            top5.update(prec5.item(), input.size(0))
+            
             if (i+1) % accumulation_steps == 0:
                 total_loss = (total_loss + loss)/accumulation_steps
-
-                # measure accuracy and record loss
-                prec1, prec5 = accuracy(output.data, target[:, 0], topk=(1, 5))
-                losses.update(loss.item(), input.size(0))
-                top1.update(prec1.item(), input.size(0))
-                top5.update(prec5.item(), input.size(0))
-
-                # compute gradient and do SGD step
-                if args.use_reinforce and not args.freeze_policy:
-                    intended_loss.backward()
-                else:
-                    loss.backward()
-
-                if args.clip_gradient is not None:
-                    clip_grad_norm_(model.parameters(), args.clip_gradient)
-
-                optimizer.step()
-                optimizer.zero_grad()
                 total_loss = 0
             else:
                 total_loss += loss
