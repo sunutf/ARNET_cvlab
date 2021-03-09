@@ -380,7 +380,7 @@ class TSN_Amd(nn.Module):
                         recent_base_out = torch.cat([base_out[b_i, store_recent_pass[b_i][-1]].unsqueeze(0) for b_i in range(batch_size)], dim=0)
                         rnn_input = torch.cat((rnn_input, (rnn_input - recent_base_out)), dim = 1)
                     
-                    if self.args.diff_to_policy:
+                    elif self.args.diff_to_policy:
                         cossim = torch.nn.CosineSimilarity(dim=1, eps=1e-6)
                         relu = torch.nn.ReLU()
                         
@@ -395,8 +395,29 @@ class TSN_Amd(nn.Module):
                         p_t = torch.log(F.softmax(self.action_fc_dict[name](feat_t)+diff_action_outs, dim=1).clamp(min=1e-8))
                         r_t = torch.cat(
                             [F.gumbel_softmax(p_t[b_i:b_i + 1], tau, True) for b_i in range(p_t.shape[0])])
+                    
+                    elif self.args.strong_skip_sim:
+                        cossim = torch.nn.CosineSimilarity(dim=1, eps=1e-6)
+                        relu = torch.nn.ReLU()
+                    
+                        cossim_outs = cossim(rnn_input, store_recent_pass_out).unsqueeze(-1)
+                        skip_action_outs = relu(cossim_outs)
                         
-                
+                        action_out_bool = skip_action_outs > 0.98 
+                        hard_skip_action = torch.tensor(action_out_bool, dtype=torch.float).cuda()
+                        depend_policy_action = torch.tensor(~action_out_bool, dtype=torch.float).cuda()
+                        
+                        hx, cx = self.block_rnn_dict[name](rnn_input, (hx, cx))
+                        feat_t = hx
+                        p_t = torch.log(F.softmax(self.action_fc_dict[name](feat_t), dim=1).clamp(min=1e-8))
+                        r_t = torch.cat(
+                            [F.gumbel_softmax(p_t[b_i:b_i + 1], tau, True) for b_i in range(p_t.shape[0])])
+                    
+                        skip_r_t = torch.cat([torch.ones(p_t.shape[0]).unsqueeze(-1), torch.zeros(p_t.shape[0]).unsqueeze(-1)], dim=1).cuda() 
+                        
+                        r_t = hard_skip_action * skip_r_t + depend_policy_action * r_t
+                                                
+
                     else:
                         hx, cx = self.block_rnn_dict[name](rnn_input, (hx, cx))
                         feat_t = hx
@@ -423,6 +444,7 @@ class TSN_Amd(nn.Module):
                         
                     if self.args.use_conf_btw_blocks:
                         raw_r_list.append(r_t)
+                    
                     take_bool =  old_r_t[:,-1].unsqueeze(-1) > 0.5
                     take_old = torch.tensor(~take_bool, dtype=torch.float).cuda()
                     take_curr = torch.tensor(take_bool, dtype=torch.float).cuda()
@@ -625,7 +647,15 @@ class TSN_Amd(nn.Module):
             else:
                 block_out = self.pass_last_fc_block('new_fc', _input)
                 output = self.amd_combine_logits(candidate_list[:,:,-1], block_out, voter_list)
-       
+        elif self.args.amd_consensus_type == "random_avg":
+            block_out = self.pass_last_fc_block('new_fc', _input)
+            
+            r_all = torch.zeros(batch_size, self.time_steps, self.amd_action_dim).cuda()
+            for i_bs in range(batch_size):
+                for i_t in range(self.time_steps):
+                    r_all[i_bs, i_t, torch.randint(self.amd_action_dim, [1])] = 1.0
+            output = self.amd_combine_logits(r_all[:,:,-1], block_out, voter_list)
+
         elif self.args.amd_consensus_type == "lstm":
             block_out = None
             output = self.pass_last_rnn_block('new_fc', _input, candidate_list)
