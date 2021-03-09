@@ -890,8 +890,8 @@ def reverse_onehot(a):
         return None
 
 def confidence_criterion_loss(criterion, all_policy_r, feat_outs, target):
-    # all_policy_r B,T,K,A
-    # feat_outs B,T,K,#class
+    # all_policy_r B,T,K-1,A
+    # feat_outs B,T,(K-1)+1,#class
     policy_gt_loss = 0
     inner_acc_loss = 0
     _feat_outs = F.softmax(feat_outs, dim=-1)
@@ -912,7 +912,7 @@ def confidence_criterion_loss(criterion, all_policy_r, feat_outs, target):
             policy_gt_loss += criterion(all_policy_r[b_i,:,k_i,:], target_policy[:,k_i])
     
     for t_i in range(feat_outs.shape[1]):
-        for k_i in range(feat_outs.shape[2]):
+        for k_i in range(feat_outs.shape[2]-1):
             total_acc_cnt +=1.0
             inner_acc_loss += criterion(feat_outs[:,t_i,k_i,:], _target)
 
@@ -1360,7 +1360,7 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
     if use_ada_framework:
         tau = get_current_temperature(epoch)
         if args.use_conf_btw_blocks:
-            alosses, elosses, inner_alosses, policy_gt_loss = get_average_meters(4)
+            alosses, elosses, inner_alosses, policy_gt_losses = get_average_meters(4)
         else: 
             alosses, elosses, kld_losses = get_average_meters(3)
 
@@ -1421,7 +1421,7 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                         kld_losses.update(kld_loss.item(), input.size(0))
                         
                     elif args.use_conf_btw_blocks:
-                        policy_gt_loss, inner_aloss= confidence_criterion_loss(criterion, all_policy_r, feat_outs, target_var)
+                        policy_gt_loss, inner_aloss= confidence_criterion_loss(criterion, all_policy_r, feat_outs, target)
                         policy_gt_loss = args.efficency_weight * policy_gt_loss
                         inner_aloss = args.accuracy_weight * inner_aloss
                         inner_alosses.update(inner_aloss.item(), input.size(0))
