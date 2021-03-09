@@ -1115,108 +1115,113 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
     end = time.time()
     print("#%s# lr:%.4f\ttau:%.4f" % (
         args.exp_header, optimizer.param_groups[-1]['lr'] * 0.1, tau if use_ada_framework else 0))
-
+    
+    cnt_repeat = args.repeat_batch
+    repeat_loss = 0
     for i, input_tuple in enumerate(train_loader):
+        for _ in range(cnt_repeat):
+            data_time.update(time.time() - end)  # TODO(yue) measure data loading time
 
-        data_time.update(time.time() - end)  # TODO(yue) measure data loading time
+            target = input_tuple[-1].cuda()
+            target_var = torch.autograd.Variable(target)
 
-        target = input_tuple[-1].cuda()
-        target_var = torch.autograd.Variable(target)
+            input = input_tuple[0]
+            if args.ada_reso_skip or args.ada_depth_skip:
+                input_var_list = [torch.autograd.Variable(input_item) for input_item in input_tuple[:-1 + meta_offset]]
 
-        input = input_tuple[0]
-        if args.ada_reso_skip or args.ada_depth_skip:
-            input_var_list = [torch.autograd.Variable(input_item) for input_item in input_tuple[:-1 + meta_offset]]
-
-            if args.real_scsampler:
-                output, r, all_policy_r, real_pred, lite_pred = model(input=input_var_list, tau=tau)
-                if args.sal_rank_loss:
-                    acc_loss = cal_sal_rank_loss(real_pred, lite_pred, target_var)
-                else:
-                    acc_loss = get_criterion_loss(criterion, lite_pred.mean(dim=1), target_var)
-            else:
-                if args.use_reinforce:
-                    output, r, all_policy_r, r_log_prob, base_outs = model(input=input_var_list, tau=tau)
-                    acc_loss = get_criterion_loss(criterion, output, target_var)
-                else:
-                    output, r, all_policy_r, feat_outs, base_outs = model(input=input_var_list, tau=tau)
-                    acc_loss = get_criterion_loss(criterion, output, target_var)
-
-            if use_ada_framework:
-                acc_loss, eff_loss, each_losses = compute_every_losses(r, all_policy_r, acc_loss, epoch)
-                if args.use_kld_loss:
-                    kld_loss = args.accuracy_weight * get_criterion_loss(criterion, amd_cal_kld(output, r, base_outs), target_var)
-                    kld_losses.update(kld_loss.item(), input.size(0))
-                elif args.use_conf_btw_blocks:
-                    policy_gt_loss, inner_aloss= confidence_criterion_loss(criterion, all_policy_r, feat_outs, target_var)
-                    policy_gt_loss = args.efficency_weight * policy_gt_loss
-                    inner_aloss = args.accuracy_weight * inner_aloss
-                    inner_alosses.update(inner_aloss.item(), input.size(0))
-                    policy_gt_losses.update(policy_gt_loss.item(), input.size(0))
-
-                if args.use_reinforce and not args.freeze_policy:
-                    if args.separated:
-                        acc_loss_items = []
-                        eff_loss_items = []
-
-                        for b_i in range(output.shape[0]):
-                            acc_loss_item = get_criterion_loss(criterion, output[b_i:b_i + 1], target_var[b_i:b_i + 1])
-                            acc_loss_item, eff_loss_item, each_losses_item = compute_every_losses(r[b_i:b_i + 1],
-                                                                                                  acc_loss_item, epoch)
-
-                            acc_loss_items.append(acc_loss_item)
-                            eff_loss_items.append(eff_loss_item)
-
-                        if args.no_baseline:
-                            b_acc = 0
-                            b_eff = 0
-                        else:
-                            b_acc = sum(acc_loss_items) / len(acc_loss_items)
-                            b_eff = sum(eff_loss_items) / len(eff_loss_items)
-
-                        log_p = torch.mean(r_log_prob, dim=1)
-
-                        acc_loss = sum(acc_loss_items) / len(acc_loss_items)
-                        eff_loss = sum(eff_loss_items) / len(eff_loss_items)
-
-                        if args.detach_reward:
-                            acc_loss_vec = (torch.stack(acc_loss_items) - b_acc).detach()
-                            eff_loss_vec = (torch.stack(eff_loss_items) - b_eff).detach()
-                        else:
-                            acc_loss_vec = (torch.stack(acc_loss_items) - b_acc)
-                            eff_loss_vec = (torch.stack(eff_loss_items) - b_eff)
-
-                        intended_acc_loss = torch.mean(log_p * acc_loss_vec)
-                        intended_eff_loss = torch.mean(log_p * eff_loss_vec)
-
-                        each_losses = [0 * each_l for each_l in each_losses]
-
+                if args.real_scsampler:
+                    output, r, all_policy_r, real_pred, lite_pred = model(input=input_var_list, tau=tau)
+                    if args.sal_rank_loss:
+                        acc_loss = cal_sal_rank_loss(real_pred, lite_pred, target_var)
                     else:
-                        sum_log_prob = torch.sum(r_log_prob) / r_log_prob.shape[0] / r_log_prob.shape[1]
-                        acc_loss = - sum_log_prob * acc_loss
-                        eff_loss = - sum_log_prob * eff_loss
-                        each_losses = [-sum_log_prob * each_l for each_l in each_losses]
+                        acc_loss = get_criterion_loss(criterion, lite_pred.mean(dim=1), target_var)
+                else:
+                    if args.use_reinforce:
+                        output, r, all_policy_r, r_log_prob, base_outs = model(input=input_var_list, tau=tau)
+                        acc_loss = get_criterion_loss(criterion, output, target_var)
+                    else:
+                        output, r, all_policy_r, feat_outs, base_outs = model(input=input_var_list, tau=tau)
+                        acc_loss = get_criterion_loss(criterion, output, target_var)
 
-                    intended_loss = intended_acc_loss + intended_eff_loss
+                if use_ada_framework:
+                    acc_loss, eff_loss, each_losses = compute_every_losses(r, all_policy_r, acc_loss, epoch)
+                    if args.use_kld_loss:
+                        kld_loss = args.accuracy_weight * get_criterion_loss(criterion, amd_cal_kld(output, r, base_outs), target_var)
+                        kld_losses.update(kld_loss.item(), input.size(0))
+                    elif args.use_conf_btw_blocks:
+                        policy_gt_loss, inner_aloss= confidence_criterion_loss(criterion, all_policy_r, feat_outs, target_var)
+                        policy_gt_loss = args.efficency_weight * policy_gt_loss
+                        inner_aloss = args.accuracy_weight * inner_aloss
+                        inner_alosses.update(inner_aloss.item(), input.size(0))
+                        policy_gt_losses.update(policy_gt_loss.item(), input.size(0))
 
-                alosses.update(acc_loss.item(), input.size(0))
-                elosses.update(eff_loss.item(), input.size(0))
-                
+                    if args.use_reinforce and not args.freeze_policy:
+                        if args.separated:
+                            acc_loss_items = []
+                            eff_loss_items = []
 
-                for l_i, each_loss in enumerate(each_losses):
-                    each_terms[l_i].update(each_loss, input.size(0))
-            
-            
-            if args.use_kld_loss:
-                loss = acc_loss + eff_loss + kld_loss
-            elif args.use_conf_btw_blocks:
-                loss = acc_loss + eff_loss + policy_gt_loss + inner_aloss
+                            for b_i in range(output.shape[0]):
+                                acc_loss_item = get_criterion_loss(criterion, output[b_i:b_i + 1], target_var[b_i:b_i + 1])
+                                acc_loss_item, eff_loss_item, each_losses_item = compute_every_losses(r[b_i:b_i + 1],
+                                                                                                      acc_loss_item, epoch)
+
+                                acc_loss_items.append(acc_loss_item)
+                                eff_loss_items.append(eff_loss_item)
+
+                            if args.no_baseline:
+                                b_acc = 0
+                                b_eff = 0
+                            else:
+                                b_acc = sum(acc_loss_items) / len(acc_loss_items)
+                                b_eff = sum(eff_loss_items) / len(eff_loss_items)
+
+                            log_p = torch.mean(r_log_prob, dim=1)
+
+                            acc_loss = sum(acc_loss_items) / len(acc_loss_items)
+                            eff_loss = sum(eff_loss_items) / len(eff_loss_items)
+
+                            if args.detach_reward:
+                                acc_loss_vec = (torch.stack(acc_loss_items) - b_acc).detach()
+                                eff_loss_vec = (torch.stack(eff_loss_items) - b_eff).detach()
+                            else:
+                                acc_loss_vec = (torch.stack(acc_loss_items) - b_acc)
+                                eff_loss_vec = (torch.stack(eff_loss_items) - b_eff)
+
+                            intended_acc_loss = torch.mean(log_p * acc_loss_vec)
+                            intended_eff_loss = torch.mean(log_p * eff_loss_vec)
+
+                            each_losses = [0 * each_l for each_l in each_losses]
+
+                        else:
+                            sum_log_prob = torch.sum(r_log_prob) / r_log_prob.shape[0] / r_log_prob.shape[1]
+                            acc_loss = - sum_log_prob * acc_loss
+                            eff_loss = - sum_log_prob * eff_loss
+                            each_losses = [-sum_log_prob * each_l for each_l in each_losses]
+
+                        intended_loss = intended_acc_loss + intended_eff_loss
+
+                    alosses.update(acc_loss.item(), input.size(0))
+                    elosses.update(eff_loss.item(), input.size(0))
+
+
+                    for l_i, each_loss in enumerate(each_losses):
+                        each_terms[l_i].update(each_loss, input.size(0))
+
+
+                if args.use_kld_loss:
+                    loss = acc_loss + eff_loss + kld_loss
+                elif args.use_conf_btw_blocks:
+                    loss = acc_loss + eff_loss + policy_gt_loss + inner_aloss
+                else:
+                    loss = acc_loss + eff_loss
             else:
-                loss = acc_loss + eff_loss
-        else:
-            input_var = torch.autograd.Variable(input)
-            output = model(input=[input_var])
-            loss = get_criterion_loss(criterion, output, target_var)
-
+                input_var = torch.autograd.Variable(input)
+                output = model(input=[input_var])
+                loss = get_criterion_loss(criterion, output, target_var)
+            
+            repeat_loss += loss
+        
+        loss = repeat_loss/float(cnt_repeat) 
         # measure accuracy and record loss
         prec1, prec5 = accuracy(output.data, target[:, 0], topk=(1, 5))
         losses.update(loss.item(), input.size(0))
@@ -1388,94 +1393,101 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
     model.eval()
 
     end = time.time()
+    
+    cnt_repeat = args.repeat_batch
+    repeat_loss = 0
     with torch.no_grad():
         for i, input_tuple in enumerate(val_loader):
+            for _ in range(cnt_repeat):
+                #input_tuple = input_tuple[0]
+                target = input_tuple[-1].cuda()
+                input = input_tuple[0]
 
-            #input_tuple = input_tuple[0]
-            target = input_tuple[-1].cuda()
-            input = input_tuple[0]
-
-            # compute output
-            if args.ada_reso_skip or args.ada_depth_skip:
-                if args.real_scsampler:
-                    output, r, all_policy_r, real_pred, lite_pred = model(input=input_tuple[:-1 + meta_offset], tau=tau)
-                    if args.sal_rank_loss:
-                        acc_loss = cal_sal_rank_loss(real_pred, lite_pred, target)
+                # compute output
+                if args.ada_reso_skip or args.ada_depth_skip:
+                    if args.real_scsampler:
+                        output, r, all_policy_r, real_pred, lite_pred = model(input=input_tuple[:-1 + meta_offset], tau=tau)
+                        if args.sal_rank_loss:
+                            acc_loss = cal_sal_rank_loss(real_pred, lite_pred, target)
+                        else:
+                            acc_loss = get_criterion_loss(criterion, lite_pred.mean(dim=1), target)
                     else:
-                        acc_loss = get_criterion_loss(criterion, lite_pred.mean(dim=1), target)
-                else:
-                    if args.save_meta and args.save_all_preds:
-                        output, r, all_policy_r, all_preds = model(input=input_tuple[:-1 + meta_offset], tau=tau)
-                        acc_loss = get_criterion_loss(criterion, output, target)
-                    else:
-                        if args.use_reinforce:
-                            output, r, all_policy_r, r_log_prob, base_outs = model(input=input_tuple[:-1 + meta_offset], tau=tau)
+                        if args.save_meta and args.save_all_preds:
+                            output, r, all_policy_r, all_preds = model(input=input_tuple[:-1 + meta_offset], tau=tau)
                             acc_loss = get_criterion_loss(criterion, output, target)
                         else:
-                            output, r, all_policy_r, feat_outs, base_outs = model(input=input_tuple[:-1 + meta_offset], tau=tau)
-                            acc_loss = get_criterion_loss(criterion, output, target)
-                if use_ada_framework:
-                    acc_loss, eff_loss, each_losses = compute_every_losses(r, all_policy_r, acc_loss, epoch)
-                    if args.use_kld_loss:
-                        kld_loss = args.accuracy_weight * get_criterion_loss(criterion, amd_cal_kld(output, r, base_outs), target)
-                        kld_losses.update(kld_loss.item(), input.size(0))
-                        
-                    elif args.use_conf_btw_blocks:
-                        policy_gt_loss, inner_aloss= confidence_criterion_loss(criterion, all_policy_r, feat_outs, target)
-                        policy_gt_loss = args.efficency_weight * policy_gt_loss
-                        inner_aloss = args.accuracy_weight * inner_aloss
-                        inner_alosses.update(inner_aloss.item(), input.size(0))
-                        policy_gt_losses.update(policy_gt_loss.item(), input.size(0))
-                
-                    if args.use_reinforce and not args.freeze_policy:
-                        if args.separated:
-                            acc_loss_items = []
-                            eff_loss_items = []
-                            for b_i in range(output.shape[0]):
-                                acc_loss_item = get_criterion_loss(criterion, output[b_i:b_i + 1],
-                                                                   target[b_i:b_i + 1])
-                                acc_loss_item, eff_loss_item, each_losses_item = compute_every_losses(r[b_i:b_i + 1],
-                                                                                                      acc_loss_item,
-                                                                                                      epoch)
-                                acc_loss_items.append(acc_loss_item)
-                                eff_loss_items.append(eff_loss_item)
-
-                            if args.no_baseline:
-                                b_acc = 0
-                                b_eff = 0
+                            if args.use_reinforce:
+                                output, r, all_policy_r, r_log_prob, base_outs = model(input=input_tuple[:-1 + meta_offset], tau=tau)
+                                acc_loss = get_criterion_loss(criterion, output, target)
                             else:
-                                b_acc = sum(acc_loss_items) / len(acc_loss_items)
-                                b_eff = sum(eff_loss_items) / len(eff_loss_items)
+                                output, r, all_policy_r, feat_outs, base_outs = model(input=input_tuple[:-1 + meta_offset], tau=tau)
+                                acc_loss = get_criterion_loss(criterion, output, target)
+                    if use_ada_framework:
+                        acc_loss, eff_loss, each_losses = compute_every_losses(r, all_policy_r, acc_loss, epoch)
+                        if args.use_kld_loss:
+                            kld_loss = args.accuracy_weight * get_criterion_loss(criterion, amd_cal_kld(output, r, base_outs), target)
+                            kld_losses.update(kld_loss.item(), input.size(0))
 
-                            log_p = torch.mean(r_log_prob, dim=1)
-                            acc_loss = 0
-                            eff_loss = 0
-                            for b_i in range(len(acc_loss_items)):
-                                acc_loss += -log_p[b_i] * (acc_loss_items[b_i] - b_acc)
-                                eff_loss += -log_p[b_i] * (eff_loss_items[b_i] - b_eff)
-                            acc_loss = acc_loss / len(acc_loss_items)
-                            eff_loss = eff_loss / len(eff_loss_items)
-                            each_losses = [0 * each_l for each_l in each_losses]
-                        else:
-                            sum_log_prob = torch.sum(r_log_prob) / r_log_prob.shape[0] / r_log_prob.shape[1]
-                            acc_loss = - sum_log_prob * acc_loss
-                            eff_loss = - sum_log_prob * eff_loss
-                            each_losses = [-sum_log_prob * each_l for each_l in each_losses]
+                        elif args.use_conf_btw_blocks:
+                            policy_gt_loss, inner_aloss= confidence_criterion_loss(criterion, all_policy_r, feat_outs, target)
+                            policy_gt_loss = args.efficency_weight * policy_gt_loss
+                            inner_aloss = args.accuracy_weight * inner_aloss
+                            inner_alosses.update(inner_aloss.item(), input.size(0))
+                            policy_gt_losses.update(policy_gt_loss.item(), input.size(0))
 
-                    alosses.update(acc_loss.item(), input.size(0))
-                    elosses.update(eff_loss.item(), input.size(0))
-                    for l_i, each_loss in enumerate(each_losses):
-                        each_terms[l_i].update(each_loss, input.size(0))
-                if args.use_kld_loss:
-                    loss = acc_loss + eff_loss + kld_loss
-                elif args.use_conf_btw_blocks:
-                    loss = acc_loss + eff_loss + policy_gt_loss + inner_aloss
+                        if args.use_reinforce and not args.freeze_policy:
+                            if args.separated:
+                                acc_loss_items = []
+                                eff_loss_items = []
+                                for b_i in range(output.shape[0]):
+                                    acc_loss_item = get_criterion_loss(criterion, output[b_i:b_i + 1],
+                                                                       target[b_i:b_i + 1])
+                                    acc_loss_item, eff_loss_item, each_losses_item = compute_every_losses(r[b_i:b_i + 1],
+                                                                                                          acc_loss_item,
+                                                                                                          epoch)
+                                    acc_loss_items.append(acc_loss_item)
+                                    eff_loss_items.append(eff_loss_item)
+
+                                if args.no_baseline:
+                                    b_acc = 0
+                                    b_eff = 0
+                                else:
+                                    b_acc = sum(acc_loss_items) / len(acc_loss_items)
+                                    b_eff = sum(eff_loss_items) / len(eff_loss_items)
+
+                                log_p = torch.mean(r_log_prob, dim=1)
+                                acc_loss = 0
+                                eff_loss = 0
+                                for b_i in range(len(acc_loss_items)):
+                                    acc_loss += -log_p[b_i] * (acc_loss_items[b_i] - b_acc)
+                                    eff_loss += -log_p[b_i] * (eff_loss_items[b_i] - b_eff)
+                                acc_loss = acc_loss / len(acc_loss_items)
+                                eff_loss = eff_loss / len(eff_loss_items)
+                                each_losses = [0 * each_l for each_l in each_losses]
+                            else:
+                                sum_log_prob = torch.sum(r_log_prob) / r_log_prob.shape[0] / r_log_prob.shape[1]
+                                acc_loss = - sum_log_prob * acc_loss
+                                eff_loss = - sum_log_prob * eff_loss
+                                each_losses = [-sum_log_prob * each_l for each_l in each_losses]
+
+                        alosses.update(acc_loss.item(), input.size(0))
+                        elosses.update(eff_loss.item(), input.size(0))
+                        for l_i, each_loss in enumerate(each_losses):
+                            each_terms[l_i].update(each_loss, input.size(0))
+                    if args.use_kld_loss:
+                        loss = acc_loss + eff_loss + kld_loss
+                    elif args.use_conf_btw_blocks:
+                        loss = acc_loss + eff_loss + policy_gt_loss + inner_aloss
+                    else:
+                        loss = acc_loss + eff_loss
                 else:
-                    loss = acc_loss + eff_loss
-            else:
-                output = model(input=[input])
-                loss = get_criterion_loss(criterion, output, target)
-            
+                    output = model(input=[input])
+                    loss = get_criterion_loss(criterion, output, target)
+                
+                repeat_loss +=loss
+                
+            loss = repeat_loss/float(cnt_repeat) 
+                
             if args.cnt_log != '':
                 target_vals = target.cpu().numpy()
                 output_vals = output.max(dim=1)[1].cpu().numpy()

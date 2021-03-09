@@ -91,7 +91,8 @@ parser.add_argument('--use_distil_loss_to_rnn', action='store_true', help='diff 
 parser.add_argument('--use_distil_loss_to_cnn', action='store_true', help='diff to policy ')
 parser.add_argument('--use_conf_btw_blocks', action='store_true', help='compare conf btw block ')
 parser.add_argument('--conf_weight', default=0., type=float)
-parser.add_argument('--strong_skip_sim', action='store_true', help='supvise skip if sim ')
+parser.add_argument('--strong_skip_sim', action='store_true', help='storng skip if both are sim ')
+parser.add_argument('--repeat_batch', default=1, type=int)
 
 
 
