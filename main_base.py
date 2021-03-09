@@ -1466,10 +1466,12 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                     elosses.update(eff_loss.item(), input.size(0))
                     for l_i, each_loss in enumerate(each_losses):
                         each_terms[l_i].update(each_loss, input.size(0))
-                if args.use_kld_loss or args.use_conf_btw_blocks:
+                if args.use_kld_loss:
                     loss = acc_loss + eff_loss + kld_loss
+                elif args.use_conf_btw_blocks:
+                    loss = acc_loss + eff_loss + policy_gt_loss + inner_aloss
                 else:
-                    loss = acc_loss + eff_loss 
+                    loss = acc_loss + eff_loss
             else:
                 output = model(input=[input])
                 loss = get_criterion_loss(criterion, output, target)
