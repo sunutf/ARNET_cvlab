@@ -1223,26 +1223,19 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
         losses.update(loss.item(), input.size(0))
         top1.update(prec1.item(), input.size(0))
         top5.update(prec5.item(), input.size(0))
-        
-        
-        if (i+1) % accumulation_steps == 0:
-            total_loss = (total_loss + loss)/accumulation_steps
-        
-           
-            # compute gradient and do SGD step
-            if args.use_reinforce and not args.freeze_policy:
-                intended_loss.backward()
-            else:
-                loss.backward()
 
+        # compute gradient and do SGD step
+        if args.use_reinforce and not args.freeze_policy:
+            intended_loss.backward()
+        else:
+            loss = loss / accumulation_steps
+            loss.backward()
+        if (i+1) % accumulation_steps == 0:
             if args.clip_gradient is not None:
                 clip_grad_norm_(model.parameters(), args.clip_gradient)
-
             optimizer.step()
             optimizer.zero_grad()
-            total_loss = 0
-        else:
-            total_loss += loss
+            
 
         # measure elapsed time
         batch_time.update(time.time() - end)
@@ -1493,13 +1486,7 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
             losses.update(loss.item(), input.size(0))
             top1.update(prec1.item(), input.size(0))
             top5.update(prec5.item(), input.size(0))
-            
-            if (i+1) % accumulation_steps == 0:
-                total_loss = (total_loss + loss)/accumulation_steps
-                total_loss = 0
-            else:
-                total_loss += loss
-            
+              
             if args.cnt_log != '':
                 target_vals = target.cpu().numpy()
                 output_vals = output.max(dim=1)[1].cpu().numpy()
