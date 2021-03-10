@@ -264,8 +264,8 @@ def main():
                 base_model_index = i
                 new_i = i
                 
-                if i == 0 :
-                    sd = load_to_sd(model_dict, tmp_path, "base_model_list.%d" % base_model_index, "new_fc_list.%d" % new_i, args.reso_list[i])
+#                if i == 0 :
+                sd = load_to_sd(model_dict, tmp_path, "base_model_list.%d" % base_model_index, "new_fc_list.%d" % new_i, args.reso_list[i])
                 
                 model_dict.update(sd)
             model.load_state_dict(model_dict)
