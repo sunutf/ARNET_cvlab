@@ -6,6 +6,7 @@ import torch
 import torchvision
 from torch import nn
 from thop import profile
+import pdb
 
 feat_dim_dict = {
     "resnet18": 512,
@@ -54,6 +55,7 @@ def get_gflops_params(model_name, resolution, num_classes, seg_len=-1, pretraine
         dummy_data = torch.randn(1, 3, seg_len, resolution, resolution)
 
     hooks = {}
+    
     flops, params = profile(model, inputs=(dummy_data,), custom_ops=hooks)
     gflops = flops / 1e9
     params = params / 1e6
@@ -61,3 +63,5 @@ def get_gflops_params(model_name, resolution, num_classes, seg_len=-1, pretraine
     return gflops, params
 
 
+if __name__ == '__main__':    
+    print(get_gflops_params("resnet50", 192, 200, -1))
