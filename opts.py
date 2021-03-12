@@ -93,7 +93,7 @@ parser.add_argument('--use_conf_btw_blocks', action='store_true', help='compare 
 parser.add_argument('--conf_weight', default=0., type=float)
 parser.add_argument('--strong_skip_sim', action='store_true', help='storng skip if both are sim ')
 parser.add_argument('--repeat_batch', default=1, type=int)
-
+parser.add_argument('--use_early_stop', action='store_true', help='early stopping')
 
 
 parser.add_argument('--amd_consensus_type', type=str, default='avg') 
