@@ -898,26 +898,64 @@ def confidence_criterion_loss(criterion, all_policy_r, feat_outs, target):
     _target = target[:,0]
     total_cnt = 0.0
     total_acc_cnt = 0.0
+    
+    batch_size  = feat_outs.shape[0]
+    time_length = feat_outs.shape[1]
+    layer_cnt   = feat_outs.shape[2]
+    
     for b_i in range(feat_outs.shape[0]):
         conf_outs = _feat_outs[b_i,:,:,_target[b_i]]
         diff_conf_l = []
-        for k_i in range(1, feat_outs.shape[2]):
+        for k_i in range(1, layer_cnt):
             diff_conf_l.append(conf_outs[:,k_i] - conf_outs[:,k_i-1])
         
         target_pass_bool = torch.stack(diff_conf_l, dim=1) > 0  #T,K-1
         target_policy = torch.tensor(target_pass_bool, dtype=torch.long).cuda()
         
-        for k_i in range(feat_outs.shape[2]-1):
+        for k_i in range(layer_cnt-1):
             total_cnt+=1.0
             policy_gt_loss += criterion(all_policy_r[b_i,:,k_i,:], target_policy[:,k_i])
     
-    for t_i in range(feat_outs.shape[1]):
-        for k_i in range(feat_outs.shape[2]-1):
+    for t_i in range(time_length):
+        for k_i in range(layer_cnt-1):
             total_acc_cnt +=1.0
             inner_acc_loss += criterion(feat_outs[:,t_i,k_i,:], _target)
 
     
     return policy_gt_loss/total_cnt, inner_acc_loss/total_acc_cnt
+
+def early_stop_criterion_loss(criterion, all_policy_r, early_stop_r, feat_outs, target):
+    # early_stop_r B, T, 2
+    # feat_out B,T,(K-1)+1, #class
+    batch_size  = feat_outs.shape[0]
+    time_length = feat_outs.shape[1]
+    layer_cnt   = feat_outs.shape[2]
+    
+    selected_r = all_policy_r[:,:,-1,-1].unsqueeze(-1) # B,T, 1
+    selected_r_bool = selected_r > 0.5
+    
+    take_selected = torch.tensor(selected_r_bool, dtype=torch.long).cuda()
+    selected_feat_outs = selected_r * feat_outs[:,:,-1,:] #using last prediction  B, T, #class
+    
+    early_stop_gt_loss = 0
+    for b_i in range(batch_size):
+        compare_pred_dict = {}
+        target_var = target[b_i, 0]
+        pred = None
+        for t_i in range(time_length):
+            if take_selected[b_i, t_i, 0] == 1:
+                compare_pred_dict[t_i] =  F.softmax(torch.sum(selected_feat_outs[b_i,:(t_i+1),:], dim=[0]), dim=-1) # #class
+        if not compare_pred_dict:
+            key_max = time_length-1
+            answer_sheet = torch.ones(time_legnth,  dtype=torch.long).cuda()
+        else:
+            key_max = max(compare_pred_dict.keys(), key=(lambda k: compare_pred_dict[k][target_var]))
+            answer_sheet = torch.cat((torch.ones(key_max,  dtype=torch.long), torch.zeros(1,  dtype=torch.long)), dim=0).cuda()
+        early_stop_gt_loss += criterion(early_stop_r[b_i, :(key_max+1), :], answer_sheet)/(key_max + 1)
+
+    return early_stop_gt_loss / batch_size
+        
+
 
 def get_criterion_loss(criterion, output, target):
     return criterion(output, target[:, 0])
@@ -977,8 +1015,12 @@ def amd_get_policy_usage_str(r_list, skip_twice_r_list, act_dim):
         st_tmp_cnt = [np.sum(st_rs[:, :, iii] == 1) for iii in range(st_rs.shape[2])] 
         prev_st_cnt = st_tmp_cnt[0]
    
-    tmp_cnt = [np.sum(rs[:, :, iii] == 1) for iii in range(rs.shape[2])] #[#all #conv_2 #conv_3 #conv_4 #conv_5]
-    tmp_total_cnt = tmp_cnt[0]
+    if args.use_early_stop:
+        tmp_cnt = [np.sum(rs[:, :, iii] == 1) for iii in range(rs.shape[2])] #[#all #conv_2 #conv_3 #conv_4 #conv_5]
+        tmp_total_cnt = rs.shape[0] * rs.shape[1]
+    else:
+        tmp_cnt = [np.sum(rs[:, :, iii] == 1) for iii in range(rs.shape[2])] #[#all #conv_2 #conv_3 #conv_4 #conv_5]
+        tmp_total_cnt = tmp_cnt[0]
 
     gflops = 0
     avg_frame_ratio = 0
@@ -991,6 +1033,8 @@ def amd_get_policy_usage_str(r_list, skip_twice_r_list, act_dim):
 #         used_model_list += [args.backbone_list[i]] * args.ada_crop_list[i]
 #         reso_list += [args.reso_list[i]] * args.ada_crop_list[i]
     prev_pass_cnt = tmp_total_cnt
+    if args.use_early_stop:
+        printed_str += "total %d\n" % (tmp_total_cnt)
     for action_i in range(rs.shape[2]):
         if action_i is 0:
             action_str = "pass%d (base) " % (action_i)
@@ -1015,6 +1059,7 @@ def amd_get_policy_usage_str(r_list, skip_twice_r_list, act_dim):
         gflops, avg_frame_ratio * num_clips)
     if skip_twice_r_list:
         printed_str += "skip_twice : %6d total_skip : %6d" % (st_tmp_cnt[st_rs.shape[2]-1], tmp_total_cnt - tmp_cnt[rs.shape[2]-1]) 
+  
     return printed_str, gflops
 
 def get_policy_usage_str(r_list, reso_dim):
@@ -1096,10 +1141,19 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
     tau = 0
     if use_ada_framework:
         tau = get_current_temperature(epoch)
-        if args.use_conf_btw_blocks:
-            alosses, elosses, inner_alosses, policy_gt_losses = get_average_meters(4)
-        else: 
-            alosses, elosses, kld_losses = get_average_meters(3)
+        if args.use_early_stop:
+            if args.use_conf_btw_blocks:
+                alosses, elosses, inner_alosses, policy_gt_losses, es_gt_losses = get_average_meters(5)
+            else:
+                alosses, elosses, kld_losses, es_gt_losses = get_average_meters(4)
+        else:        
+            if args.use_conf_btw_blocks:
+                alosses, elosses, inner_alosses, policy_gt_losses = get_average_meters(4)
+            else: 
+                alosses, elosses, kld_losses = get_average_meters(3)
+                      
+        
+                      
         each_terms = get_average_meters(NUM_LOSSES)
         r_list = []
         kld_loss = 0
@@ -1138,6 +1192,10 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
                 if args.use_reinforce:
                     output, r, all_policy_r, r_log_prob, base_outs = model(input=input_var_list, tau=tau)
                     acc_loss = get_criterion_loss(criterion, output, target_var)
+                elif args.use_conf_btw_blocks or args.use_early_stop:
+                    output, r, all_policy_r, feat_outs, early_stop_r = model(input=input_var_list, tau=tau)
+                    acc_loss = get_criterion_loss(criterion, output, target_var)
+
                 else:
                     output, r, all_policy_r, feat_outs, base_outs = model(input=input_var_list, tau=tau)
                     acc_loss = get_criterion_loss(criterion, output, target_var)
@@ -1145,14 +1203,21 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
             if use_ada_framework:
                 acc_loss, eff_loss, each_losses = compute_every_losses(r, all_policy_r, acc_loss, epoch)
                 if args.use_kld_loss:
+                    if args.use_conf_btw_blocks or args.use_early_stop:
+                        base_outs = feat_outs[:,:,-1,:]
                     kld_loss = args.accuracy_weight * get_criterion_loss(criterion, amd_cal_kld(output, r, base_outs), target_var)
                     kld_losses.update(kld_loss.item(), input.size(0))
-                elif args.use_conf_btw_blocks:
+                    
+                if args.use_conf_btw_blocks:
                     policy_gt_loss, inner_aloss= confidence_criterion_loss(criterion, all_policy_r, feat_outs, target_var)
                     policy_gt_loss = args.efficency_weight * policy_gt_loss
                     inner_aloss = args.accuracy_weight * inner_aloss
                     inner_alosses.update(inner_aloss.item(), input.size(0))
                     policy_gt_losses.update(policy_gt_loss.item(), input.size(0))
+                    
+                if args.use_early_stop:
+                    early_stop_gt_loss = args.efficency_weight * early_stop_criterion_loss(criterion, all_policy_r, early_stop_r, feat_outs, target_var)
+                    es_gt_losses.update(early_stop_gt_loss.item(), input.size(0))
 
                 if args.use_reinforce and not args.freeze_policy:
                     if args.separated:
@@ -1210,9 +1275,12 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
             if args.use_kld_loss:
                 loss = acc_loss + eff_loss + kld_loss
             elif args.use_conf_btw_blocks:
-                loss = acc_loss + eff_loss + policy_gt_loss + inner_aloss
+                loss = acc_loss + eff_loss + policy_gt_loss + inner_aloss 
             else:
                 loss = acc_loss + eff_loss
+                      
+            if args.use_early_stop:
+                loss = loss + early_stop_gt_loss
         else:
             input_var = torch.autograd.Variable(input)
             output = model(input=[input_var])
@@ -1284,6 +1352,12 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
                 else:
                     print_output += '\n a_l {aloss.val:.4f} ({aloss.avg:.4f})\t e_l {eloss.val:.4f} ({eloss.avg:.4f})\t  r {r} pick {pick}'.format(
                         aloss=alosses, eloss=elosses, r=elastic_list_print(roh_r), pick = np.count_nonzero(roh_r == len(args.block_rnn_list)+1)
+                    )
+                
+                if args.use_early_stop:
+                    es_r = early_stop_r[-1,:,0].detach().cpu().numpy()
+                    print_output += '\n es_g_l {es_g_loss.val:.4f} ({es_g_loss.avg:.4f}), es_r {es} \t' .format(
+                        es_g_loss=es_gt_losses, es = np.nonzero(es_r)
                     )
                 print_output += extra_each_loss_str(each_terms)
             if args.show_pred:
@@ -1361,11 +1435,18 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
 
     if use_ada_framework:
         tau = get_current_temperature(epoch)
-        if args.use_conf_btw_blocks:
-            alosses, elosses, inner_alosses, policy_gt_losses = get_average_meters(4)
-        else: 
-            alosses, elosses, kld_losses = get_average_meters(3)
-
+        if args.use_early_stop:
+            if args.use_conf_btw_blocks:
+                alosses, elosses, inner_alosses, policy_gt_losses, es_gt_losses = get_average_meters(5)
+            else:
+                alosses, elosses, kld_losses, es_gt_losses = get_average_meters(4)
+        else:        
+            if args.use_conf_btw_blocks:
+                alosses, elosses, inner_alosses, policy_gt_losses = get_average_meters(4)
+            else: 
+                alosses, elosses, kld_losses = get_average_meters(3)
+                      
+            
         kld_loss = 0
         iter_list = args.backbone_list
 
@@ -1411,13 +1492,13 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                     if args.save_meta and args.save_all_preds:
                         output, r, all_policy_r, all_preds = model(input=input_tuple[:-1 + meta_offset], tau=tau)
                         acc_loss = get_criterion_loss(criterion, output, target)
+                    elif args.use_conf_btw_blocks or args.use_early_stop:
+                        output, r, all_policy_r, feat_outs, early_stop_r = model(input=input_tuple[:-1 + meta_offset], tau=tau)
+                        acc_loss = get_criterion_loss(criterion, output, target)
                     else:
-                        if args.use_reinforce:
-                            output, r, all_policy_r, r_log_prob, base_outs = model(input=input_tuple[:-1 + meta_offset], tau=tau)
-                            acc_loss = get_criterion_loss(criterion, output, target)
-                        else:
-                            output, r, all_policy_r, feat_outs, base_outs = model(input=input_tuple[:-1 + meta_offset], tau=tau)
-                            acc_loss = get_criterion_loss(criterion, output, target)
+                        output, r, all_policy_r, feat_outs, base_outs = model(input=input_tuple[:-1 + meta_offset], tau=tau)
+                        acc_loss = get_criterion_loss(criterion, output, target)
+
                 if use_ada_framework:
                     acc_loss, eff_loss, each_losses = compute_every_losses(r, all_policy_r, acc_loss, epoch)
                     if args.use_kld_loss:
@@ -1430,7 +1511,11 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                         inner_aloss = args.accuracy_weight * inner_aloss
                         inner_alosses.update(inner_aloss.item(), input.size(0))
                         policy_gt_losses.update(policy_gt_loss.item(), input.size(0))
-
+                    
+                    if args.use_early_stop:
+                        early_stop_gt_loss = args.efficency_weight * early_stop_criterion_loss(criterion, all_policy_r, early_stop_r, feat_outs, target)
+                        es_gt_losses.update(early_stop_gt_loss.item(), input.size(0))
+                    
                     if args.use_reinforce and not args.freeze_policy:
                         if args.separated:
                             acc_loss_items = []
@@ -1476,6 +1561,9 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                     loss = acc_loss + eff_loss + policy_gt_loss + inner_aloss
                 else:
                     loss = acc_loss + eff_loss
+                    
+                if args.use_early_stop:
+                    loss = loss + early_stop_gt_loss
             else:
                 output = model(input=[input])
                 loss = get_criterion_loss(criterion, output, target)
@@ -1610,6 +1698,12 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                     else:
                         print_output += '\n a_l {aloss.val:.4f} ({aloss.avg:.4f})\t e_l {eloss.val:.4f} ({eloss.avg:.4f})\t  r {r} pick {pick}'.format(
                             aloss=alosses, eloss=elosses, r=elastic_list_print(roh_r), pick = np.count_nonzero(roh_r == len(args.block_rnn_list)+1)
+                        )
+                        
+                    if args.use_early_stop:
+                        es_r = early_stop_r[-1,:,0].detach().cpu().numpy()
+                        print_output += '\n es_g_l {es_g_loss.val:.4f} ({es_g_loss.avg:.4f}), es_r {es} \t' .format(
+                            es_g_loss=es_gt_losses, es = np.nonzero(es_r)
                         )
                     print_output += extra_each_loss_str(each_terms)
 
