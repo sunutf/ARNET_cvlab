@@ -74,12 +74,12 @@ if __name__ == "__main__":
                             full_path_r += ' '
                             full_path += word
                             full_path_r += word
-                        full_path += '/'
-                        full_path += sub_path
-                        full_path += '.mp4'
-                        full_path_r += '/'
-                        full_path_r += sub_path
-                        full_path_r += '.mp4'
+                    full_path += '/'
+                    full_path += sub_path
+                    full_path += '.mp4'
+                    full_path_r += '/'
+                    full_path_r += sub_path
+                    full_path_r += '.mp4'
                     
                     file_names.append(full_path)
                     file_names_r.append(full_path_r)
