@@ -6,12 +6,14 @@ from tqdm import tqdm
 import argparse
 from multiprocessing import Pool
 import re
+import glob
+import pdb
 
 parser = argparse.ArgumentParser(description="Dataset processor: Video->Frames")
 parser.add_argument("dir_path", type=str, help="original dataset path")
 parser.add_argument("dst_dir_path", type=str, help="dest path to save the frames")
 parser.add_argument("--prefix", type=str, default="image_%05d.jpg", help="output image type")
-parser.add_argument("--accepted_formats", type=str, default=[".mp4", ".mkv", ".webm"], nargs="+",
+parser.add_argument("--accepted_formats", type=str, default=[".mp4", ".mkv", ".webm", ".avi"], nargs="+",
                     help="list of input video formats")
 parser.add_argument("--begin", type=int, default=0)
 parser.add_argument("--end", type=int, default=666666666)
@@ -21,6 +23,7 @@ parser.add_argument("--num_workers", type=int, default=16)
 parser.add_argument("--dry_run", action="store_true")
 parser.add_argument("--parallel", action="store_true")
 parser.add_argument("--dataset", type=str, default="activitynet", help="dataset activitynet/ minik/ fcvid")
+parser.add_argument("--char", type=str, default="a", help="dataset activitynet/ minik/ fcvid")
 
 args = parser.parse_args()
 
@@ -36,16 +39,52 @@ if __name__ == "__main__":
     t0 = time.time()
     dir_path = args.dir_path
     dst_dir_path = args.dst_dir_path
-   
     empty_video_list = []
-    if args.file_list == "":
-        file_names = sorted(os.listdir(dir_path))
-    else:
-        _file_names = [x.strip() for x in open(args.file_list).readlines()]
 
-        if args.dataset == 'minik':
-            file_names = [re.split('/',x)[0] if len(re.split(' ', re.split('/',x)[0])) is 1 else (re.split(' ', re.split('/',x)[0])[0] + ' ' + re.split(' ', re.split('/',x)[0])[1])  + '/' + re.split(' ', re.split('/',x)[1])[0] + '.mp4' for x in _file_names]
+    if args.dataset == 'fcvid':
+        dominant_c = args.char
+        if args.file_list == "":
+            file_names = glob.glob(os.path.join(dir_path,'{}*/*'.format(dominant_c)))
 
+        else:
+            _file_names = [x.strip() for x in open(args.file_list).readlines()]
+
+    else:    
+        if args.file_list == "":
+            file_names = sorted(os.listdir(dir_path))
+        else:
+            _file_names = [x.strip() for x in open(args.file_list).readlines()]
+            file_names = []
+            file_names_r = []
+            if args.dataset == 'minik': 
+                for _file_name in _file_names:
+                    path = re.split('/',_file_name)[0] 
+                    sub_path = re.split(' ', re.split('/',_file_name)[1])[0]
+                    
+                    full_path = re.split(' ', path)[0]
+                    full_path_r = re.split(' ', path)[0]
+                    if len(re.split(' ', path)) > 1 :                        
+                        for i, word in enumerate(re.split(' ', path)):
+                            if i is 0:
+                                continue
+                            full_path += '_' 
+                            full_path_r += ' '
+                            full_path += word
+                            full_path_r += word
+                        full_path += '/'
+                        full_path += sub_path
+                        full_path += '.mp4'
+                        full_path_r += '/'
+                        full_path_r += sub_path
+                        full_path_r += '.mp4'
+                    
+                    file_names.append(full_path)
+                    file_names_r.append(full_path_r)
+                
+#                 file_names = [re.split('/',x)[0] if len(re.split(' ', re.split('/',x)[0])) is 1 else ((full_path = word if i is 0 else full_path += ' ' + word for i, word in enumerate(re.split(' ', re.split('/',x)[0]))) + '/' + re.split(' ', re.split('/',x)[1])[0] + '.mp4') for x in _file_names]
+#                 file_names = [re.split('/',x)[0] if len(re.split(' ', re.split('/',x)[0])) is 1 else (re.split(' ', re.split('/',x)[0])[0] + ' ' + re.split(' ', re.split('/',x)[0])[1])  + '/' + re.split(' ', re.split('/',x)[1])[0] + '.mp4' for x in _file_names]
+
+                
     del_list = []
     for i, file_name in enumerate(file_names):
         if not any([x in file_name for x in args.accepted_formats]):
@@ -54,11 +93,15 @@ if __name__ == "__main__":
     file_names = file_names[args.begin:args.end + 1]
     print("%d videos to handle (after %d being removed)" % (len(file_names), len(del_list)))
     cmd_list = []
-    for file_name in tqdm(file_names):
+    for i, file_name in tqdm(enumerate(file_names)):
 
         name, ext = os.path.splitext(file_name)
-        
         dst_directory_path = os.path.join(dst_dir_path, name)
+
+        if args.dataset == 'minik':
+            name_r, ext_r = os.path.splitext(file_names_r[i])
+            dst_directory_path = os.path.join(dst_dir_path, name_r)
+        
         video_file_path = os.path.join(dir_path, file_name)   
         if not os.path.exists(dst_directory_path):
             os.makedirs(dst_directory_path, exist_ok=True)
@@ -70,12 +113,6 @@ if __name__ == "__main__":
 #         if len(os.listdir(dst_directory_path)) != 0:
 #             continue
         
-        if args.dataset == 'minik':
-            file_name = re.split('/',name)[0] if len(re.split(' ', re.split('/',name)[0])) is 1 else (re.split(' ', re.split('/',name)[0])[0] + '\ ' + re.split(' ', re.split('/',name)[0])[1])  + '/' + re.split(' ', re.split('/',name)[1])[0] + ".mp4"
-            
-            name = re.split('.mp4', file_name)[0]
-            dst_directory_path = os.path.join(dst_dir_path, name)
-            video_file_path = os.path.join(dir_path, file_name)
 
 #         print(dst_directory_path)
         if args.frame_rate > 0:
