@@ -3,7 +3,7 @@ from ops.basic_ops import ConsensusModule
 from ops.transforms import *
 from torch.nn.init import normal_, constant_
 import torch.nn.functional as F
-from efficientnet_pytorch import EfficientNet
+#from efficientnet_pytorch import EfficientNet
 from ops.net_flops_table import feat_dim_dict
 from ops.amd_net_flops_table import feat_dim_of_res50_block
 
@@ -183,6 +183,7 @@ class TSN_Amd(nn.Module):
         self.input_std = [0.229, 0.224, 0.225]
         if self.args.ada_reso_skip:
             shall_pretrain = len(self.args.model_paths) == 0 or self.args.model_paths[0].lower() != 'none'
+           
             for bbi, backbone_name in enumerate(self.args.backbone_list):
                 model = self._prep_a_net(backbone_name, shall_pretrain)
                 self.base_model_list.append(model)

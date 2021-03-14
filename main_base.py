@@ -175,7 +175,8 @@ def main():
     wandb.init(
         project="arnet-reproduce",
         name="AMD "+"aff"+ str(args.accuracy_weight) + " eff"+ str(args.efficency_weight) + "b" + str(args.batch_size) + "-" + str(args.pe_at_rnn),
-        entity="video_channel"
+        entity="video_channel",
+        settings=wandb.Settings(start_method='fork')
     )
     wandb.config.update(args)
     set_random_seed(args.random_seed)
@@ -764,7 +765,7 @@ def init_gflops_table():
     gflops_table = {}
     params_table = {}
     seg_len = -1
-
+    
     for i, backbone in enumerate(args.backbone_list):
         gflops_table[backbone + str(args.reso_list[i])] = \
             get_gflops_params(backbone, args.reso_list[i], num_class, seg_len)[0]
@@ -822,7 +823,7 @@ def cal_eff(r):
         r_loss = torch.tensor(gflops_vec).cuda()
     else:
         r_loss = torch.tensor([4., 2., 1., 0.5, 0.25, 0.125, 0.0625, 0.03125]).cuda()[:r.shape[2]]
-
+    
     loss = torch.sum(torch.mean(r, dim=[0, 1]) * r_loss)
     each_losses.append(loss.detach().cpu().item())
 
