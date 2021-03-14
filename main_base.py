@@ -354,6 +354,7 @@ def main():
                 
                 model_dict.update(sd)
             model.load_state_dict(model_dict)
+            
     # TODO(yue) ada_model loading process
     elif args.ada_reso_skip:
         if test_mode:
@@ -371,7 +372,7 @@ def main():
             sd = load_to_sd(model_dict, args.base_pretrained_from, "foo", "bar", -1, apple_to_apple=True)
 
             model_dict.update(sd)
-            model.load_state_dict(model_dict)
+            model.load_state_dict(model_dict, strict=False)
 
         elif len(args.model_paths) != 0:
             print("Adaptively load from model_path_list")
@@ -395,6 +396,7 @@ def main():
                 prev_path = tmp_path
                 model_dict.update(sd)
             model.load_state_dict(model_dict)
+
     
     else:
         if test_mode:
@@ -948,7 +950,7 @@ def early_stop_criterion_loss(criterion, all_policy_r, early_stop_r, feat_outs, 
                 compare_pred_dict[t_i] =  F.softmax(torch.sum(selected_feat_outs[b_i,:(t_i+1),:], dim=[0]), dim=-1) # #class
         if not compare_pred_dict:
             key_max = time_length-1
-            answer_sheet = torch.ones(time_legnth,  dtype=torch.long).cuda()
+            answer_sheet = torch.ones(time_length,  dtype=torch.long).cuda()
         else:
             key_max = max(compare_pred_dict.keys(), key=(lambda k: compare_pred_dict[k][target_var]))
             answer_sheet = torch.cat((torch.ones(key_max,  dtype=torch.long), torch.zeros(1,  dtype=torch.long)), dim=0).cuda()
@@ -1166,6 +1168,9 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
     model.module.partialBN(not args.no_partialbn)
     # switch to train mode
     model.train()
+    
+#    model.eval()
+#    model.module.early_stop_decision_block.train()
 
     end = time.time()
     print("#%s# lr:%.4f\ttau:%.4f" % (
@@ -1282,6 +1287,8 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
                       
             if args.use_early_stop:
                 loss = loss + early_stop_gt_loss
+#                 loss =  early_stop_gt_loss
+
         else:
             input_var = torch.autograd.Variable(input)
             output = model(input=[input_var])
@@ -1299,6 +1306,7 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
         else:
             loss = loss / accumulation_steps
             loss.backward()
+            
         if (i+1) % accumulation_steps == 0:
             if args.clip_gradient is not None:
                 clip_grad_norm_(model.parameters(), args.clip_gradient)
