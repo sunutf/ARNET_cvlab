@@ -25,6 +25,7 @@ parser.add_argument("--parallel", action="store_true")
 parser.add_argument("--dataset", type=str, default="activitynet", help="dataset activitynet/ minik/ fcvid")
 parser.add_argument("--char", type=str, default="a", help="dataset activitynet/ minik/ fcvid")
 
+parser.add_argument("--mode", type=str, default="train", help="dataset activitynet/ minik/ fcvid")
 args = parser.parse_args()
 
 
@@ -59,8 +60,10 @@ if __name__ == "__main__":
             if args.dataset == 'minik': 
                 for _file_name in _file_names:
                     path = re.split('/',_file_name)[0] 
-                    sub_path = re.split(' ', re.split('/',_file_name)[1])[0]
-                    
+                    if args.mode =="train":
+                        sub_path = re.split(' ', re.split('/',_file_name)[1])[0]
+                    elif args.mode == "val":
+                        sub_path = re.split('_', re.split('/',_file_name)[1])[0]
                     full_path = re.split(' ', path)[0]
                     full_path_r = re.split(' ', path)[0]
                     if len(re.split(' ', path)) > 1 :                        
@@ -106,10 +109,18 @@ if __name__ == "__main__":
         if not os.path.exists(dst_directory_path):
             os.makedirs(dst_directory_path, exist_ok=True)
 
-        if not os.path.isfile(video_file_path):
-            print("EMPTY!!!")
-            empty_video_list.append(video_file_path)
         
+        for form in args.accepted_formats:
+            video_file_path = name + form
+            video_file_path = os.path.join(dir_path, video_file_path)
+            if os.path.isfile(video_file_path):
+                break
+            
+        if not os.path.isfile(video_file_path):
+           print("empty")
+           empty_video_list.append(video_file_path)
+           print(video_file_path)
+           print(len(empty_video_list))
 #         if len(os.listdir(dst_directory_path)) != 0:
 #             continue
         
