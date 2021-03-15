@@ -39,7 +39,7 @@ def return_minik(data_dir):
     root_data = data_dir + "/frames"
     filename_imglist_train = ospj(data_dir, 'mini_train_videofolder.txt')
     filename_imglist_val = ospj(data_dir, 'mini_val_videofolder.txt')
-    prefix = '{:05d}.jpg'
+    prefix = 'image_{:05d}.jpg'
 
     return filename_categories, filename_imglist_train, filename_imglist_val, root_data, prefix
 

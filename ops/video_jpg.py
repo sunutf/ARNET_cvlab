@@ -57,7 +57,7 @@ if __name__ == "__main__":
             _file_names = [x.strip() for x in open(args.file_list).readlines()]
             file_names = []
             file_names_r = []
-            print(_file_names)
+            #print(_file_names)
             if args.dataset == 'minik': 
                 for _file_name in _file_names:
                     path = re.split('/',_file_name)[0] 
@@ -84,8 +84,8 @@ if __name__ == "__main__":
                     full_path_r += '/'
                     full_path_r += sub_path
                     full_path_r += '.mp4'
-                    print(full_path)
-                    print(full_path_r)
+            #        print(full_path)
+             #       print(full_path_r)
                     file_names.append(full_path)
                     file_names_r.append(full_path_r)
                 
@@ -113,6 +113,8 @@ if __name__ == "__main__":
         video_file_path = os.path.join(dir_path, file_name)   
         if not os.path.exists(dst_directory_path):
             os.makedirs(dst_directory_path, exist_ok=True)
+        else:
+            continue
 
         
         for form in args.accepted_formats:
@@ -135,11 +137,15 @@ if __name__ == "__main__":
                 if len(modified_path) > 1:
                     for c in range(1, len(_name_r)):
                         modified_path += '\ '
+                 #       print(_name_r[c]) 
+#                        if '\(' or '\)'  in _name_r[c]:
+                #            print(_name_r[c])
+ #                           modified_path += '\\'
                         modified_path += _name_r[c]
                 
                 dst_directory_path = os.path.join(dst_dir_path, modified_path) 
-#         print(dst_directory_path)
-        
+                #print(dst_directory_path)
+            
         if args.frame_rate > 0:
             frame_rate_str = "-r %d" % args.frame_rate
         else:
