@@ -57,13 +57,17 @@ if __name__ == "__main__":
             _file_names = [x.strip() for x in open(args.file_list).readlines()]
             file_names = []
             file_names_r = []
+            print(_file_names)
             if args.dataset == 'minik': 
                 for _file_name in _file_names:
                     path = re.split('/',_file_name)[0] 
                     if args.mode =="train":
                         sub_path = re.split(' ', re.split('/',_file_name)[1])[0]
                     elif args.mode == "val":
-                        sub_path = re.split('_', re.split('/',_file_name)[1])[0]
+                        sub_path = re.split(' ', re.split('/',_file_name)[1])[0]
+                        sub_path = re.split('000', sub_path)[0]
+                        sub_path = sub_path[:-1]
+                        
                     full_path = re.split(' ', path)[0]
                     full_path_r = re.split(' ', path)[0]
                     if len(re.split(' ', path)) > 1 :                        
@@ -80,7 +84,8 @@ if __name__ == "__main__":
                     full_path_r += '/'
                     full_path_r += sub_path
                     full_path_r += '.mp4'
-                    
+                    print(full_path)
+                    print(full_path_r)
                     file_names.append(full_path)
                     file_names_r.append(full_path_r)
                 
@@ -123,9 +128,18 @@ if __name__ == "__main__":
            print(len(empty_video_list))
 #         if len(os.listdir(dst_directory_path)) != 0:
 #             continue
-        
-
+        else:
+            if args.dataset == 'minik':
+                _name_r = re.split(' ', name_r)
+                modified_path = _name_r[0]
+                if len(modified_path) > 1:
+                    for c in range(1, len(_name_r)):
+                        modified_path += '\ '
+                        modified_path += _name_r[c]
+                
+                dst_directory_path = os.path.join(dst_dir_path, modified_path) 
 #         print(dst_directory_path)
+        
         if args.frame_rate > 0:
             frame_rate_str = "-r %d" % args.frame_rate
         else:
