@@ -647,7 +647,7 @@ class TSN_Amd(nn.Module):
                     all_policy_result_list.append(raw_r_list)
         
             
-
+        return_supp = None
         if self.args.amd_consensus_type == "avg":
             if self.args.use_distil_loss_to_rnn or self.args.use_distil_loss_to_cnn:
                 skip_result_list.append(candidate_list[:,:,-1].cuda()) 
@@ -694,10 +694,11 @@ class TSN_Amd(nn.Module):
                     output = self.amd_combine_logits(candidate_log_list[:,:,-1], block_out, voter_list)
                 else:
                     candidate_log_list = torch.stack(candidate_log_list, dim=2)
+                return_supp = choose_selected_es
 
             else:
+                return_supp = block_out
                 candidate_log_list = torch.stack(candidate_log_list, dim=2)
-                
             
             
         elif self.args.amd_consensus_type == "random":
@@ -707,8 +708,10 @@ class TSN_Amd(nn.Module):
             for i_bs in range(batch_size):
                 for i_t in range(self.time_steps):
                     r_all[i_bs, i_t, torch.randint(self.amd_action_dim, [1])] = 1.0
+            
             output = self.amd_combine_logits(r_all[:,:,-1], block_out, voter_list)
-
+            candidate_log_list = r_all[:,:,-1].unsqueeze(-1).expand(-1,-1,5)
+        
         elif self.args.amd_consensus_type == "lstm":
             block_out = None
             output = self.pass_last_rnn_block('new_fc', _input, candidate_list)
@@ -718,23 +721,12 @@ class TSN_Amd(nn.Module):
         if self.args.skip_twice:
             return output.squeeze(1), candidate_log_list, torch.stack(all_policy_result_list, dim=2), torch.stack(block_out_list, dim=2), block_out
         if self.args.use_conf_btw_blocks or self.args.use_early_stop:
-            return output.squeeze(1), candidate_log_list, torch.stack(all_policy_result_list, dim=2), torch.stack(block_out_list, dim=2), choose_selected_es
+            return output.squeeze(1), candidate_log_list, torch.stack(all_policy_result_list, dim=2), torch.stack(block_out_list, dim=2), return_supp
        
         else:
             return output.squeeze(1), candidate_log_list, None, None, block_out
             
-        
-    def amd_lstm_combine_logits(self, r_l, base_out_l):
-        # r_l        B, T, K, 
-        # base_out   B, T, K, #class
-        
-        batch_size = base_out_l.shape[0]
-        pred_tensor = base_out_l
-        r_tensor = r_l.unsqueeze(-1)
-        t_tensor = torch.sum(r_l, dim=[1, 2]).unsqueeze(-1).clamp(1)  # TODO sum T, K to count frame
-        return (pred_tensor * r_tensor).sum(dim=[1, 2]) / t_tensor
-    
-        
+
     def amd_distil_combine_logits(self, r_l, base_out_l):
         # r_l        B, T, K, 
         # base_out   B, T, K, #class
