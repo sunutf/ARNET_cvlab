@@ -686,10 +686,6 @@ class TSN_Amd(nn.Module):
                     output = self.amd_combine_logits(candidate_log_list[:,:,-1], block_out, voter_list)
                 else:
                     candidate_log_list = torch.stack(candidate_log_list, dim=2)
-<<<<<<< HEAD
-                    
-=======
->>>>>>> 098a40853387f1a4ed3a29a47f7babd17791d56c
                 return_supp = choose_selected_es
 
             else:
@@ -706,12 +702,8 @@ class TSN_Amd(nn.Module):
                     r_all[i_bs, i_t, torch.randint(self.amd_action_dim, [1])] = 1.0
             
             output = self.amd_combine_logits(r_all[:,:,-1], block_out, voter_list)
-<<<<<<< HEAD
-            candidate_log_list = r_all.unsqueeze(-2).expand(-1,-1,5,-1)
-=======
             candidate_log_list = r_all[:,:,-1].unsqueeze(-1).expand(-1,-1,5)
         
->>>>>>> 098a40853387f1a4ed3a29a47f7babd17791d56c
         elif self.args.amd_consensus_type == "lstm":
             block_out = None
             output = self.pass_last_rnn_block('new_fc', _input, candidate_list)
@@ -728,12 +720,6 @@ class TSN_Amd(nn.Module):
         else:
             return output.squeeze(1), candidate_log_list, None, None, block_out
             
-<<<<<<< HEAD
-        
-        
-=======
-
->>>>>>> 098a40853387f1a4ed3a29a47f7babd17791d56c
     def amd_distil_combine_logits(self, r_l, base_out_l):
         # r_l        B, T, K, 
         # base_out   B, T, K, #class
