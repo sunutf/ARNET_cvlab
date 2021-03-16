@@ -63,10 +63,11 @@ if __name__ == "__main__":
                     path = re.split('/',_file_name)[0] 
                     if args.mode =="train":
                         sub_path = re.split(' ', re.split('/',_file_name)[1])[0]
+                        dst_path = sub_path
                     elif args.mode == "val":
-                        sub_path = re.split(' ', re.split('/',_file_name)[1])[0]
-                        sub_path = re.split('000', sub_path)[0]
-                        sub_path = sub_path[:-1]
+                        dst_path = re.split(' ', re.split('/',_file_name)[1])[0]
+                        sub_path = re.split('_00', dst_path)[0]
+                        
                         
                     full_path = re.split(' ', path)[0]
                     full_path_r = re.split(' ', path)[0]
@@ -82,7 +83,7 @@ if __name__ == "__main__":
                     full_path += sub_path
                     full_path += '.mp4'
                     full_path_r += '/'
-                    full_path_r += sub_path
+                    full_path_r += dst_path
                     full_path_r += '.mp4'
             #        print(full_path)
              #       print(full_path_r)

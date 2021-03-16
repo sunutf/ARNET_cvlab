@@ -3,7 +3,7 @@ from ops.basic_ops import ConsensusModule
 from ops.transforms import *
 from torch.nn.init import normal_, constant_
 import torch.nn.functional as F
-#from efficientnet_pytorch import EfficientNet
+from efficientnet_pytorch import EfficientNet
 from ops.net_flops_table import feat_dim_dict
 from ops.amd_net_flops_table import feat_dim_of_res50_block
 
@@ -183,7 +183,6 @@ class TSN_Amd(nn.Module):
         self.input_std = [0.229, 0.224, 0.225]
         if self.args.ada_reso_skip:
             shall_pretrain = len(self.args.model_paths) == 0 or self.args.model_paths[0].lower() != 'none'
-           
             for bbi, backbone_name in enumerate(self.args.backbone_list):
                 model = self._prep_a_net(backbone_name, shall_pretrain)
                 self.base_model_list.append(model)
@@ -525,19 +524,12 @@ class TSN_Amd(nn.Module):
         hx = init_hidden(_b, feat_dim)
         cx = init_hidden(_b, feat_dim)
         
-        prev_rnn_input = None
         for t in range(self.time_steps):
-            take_bool =  candidate[:,t,-1].unsqueeze(-1) > 0.5
-            take_old  = torch.tensor(~take_bool, dtype=torch.float).cuda()
-            take_curr = torch.tensor(take_bool, dtype=torch.float).cuda()
-            if t == 0:
-                _rnn_input = take_curr * _input_data[:, t]
-            else:
-                _rnn_input = take_old * _input_data[:, t-1] + take_curr * _input_data[:, t]
+            _rnn_input = _input_data[:, t] * candidate[:,t,-1].unsqueeze(-1)
             hx, cx = self.last_rnn(_rnn_input, (hx, cx))
 
         return self.new_fc(hx)
-    
+                   
     def pass_pred_block(self, name, hx_l):
         feat = hx_l # B,T,512
         _b, _t = feat.shape[0], feat.shape[1]
@@ -613,7 +605,7 @@ class TSN_Amd(nn.Module):
         for name in self.block_cnn_dict.keys():
             # input image tensor with 224 size
             _input = self.pass_cnn_block(name, _input) 
-
+            
             if name is not 'base' and name in self.block_rnn_list:
                 if self.args.voting_policy:
                     voter_list = torch.zeros(batch_size, self.time_steps, 1, dtype=torch.float).cuda() #B, T, 1
@@ -622,24 +614,24 @@ class TSN_Amd(nn.Module):
                 # update candidate_list based on policy rnn
                 else :
                     _candidate_list, hx_list, raw_r_list = self.gate_fc_rnn_block(name, _input, candidate_list, tau, None)
-
+                
                 if self.args.use_distil_loss_to_rnn :
                     skip_new_list = (candidate_list[:,:,-1] - _candidate_list[:,:,-1]).cuda()
                     skip_result_list.append(skip_new_list)
                     block_out_list.append(self.pass_pred_block(name, hx_list))
-
+                    
                 elif self.args.use_distil_loss_to_cnn:
                     base_out = hx_list
                     block_out_list.append(self.block_fc_backbone(name, base_out, self.block_pred_cnn_fc_dict[name]))
-
+                    
                 elif self.args.use_conf_btw_blocks:
                     block_out_list.append(self.pass_pred_block(name, hx_list))
-
+                
                 candidate_list = _candidate_list
 
 #                 take_bool = candidate_list[:,:,1] > 0.5
 #                 candidate_log_list.append(torch.tensor(take_bool, dtype=torch.float).cuda())
-
+              
                 candidate_log_list.append(candidate_list[:,:,-1])
                 if self.args.skip_twice:
                     all_policy_result_list.append(candidate_list)
@@ -652,18 +644,18 @@ class TSN_Amd(nn.Module):
             if self.args.use_distil_loss_to_rnn or self.args.use_distil_loss_to_cnn:
                 skip_result_list.append(candidate_list[:,:,-1].cuda()) 
                 skip_r_l = torch.stack(skip_result_list, dim=2) # (B,T) -> B,T,K 
-
+                
                 block_out = self.pass_last_fc_block('new_fc', _input)
                 block_out_list.append(block_out)
                 block_r_l = torch.stack(block_out_list, dim=2) # (B,T,#class) -> (B,T,K,#class)
-
+                
                 output = self.amd_distil_combine_logits(skip_r_l, block_r_l)
             elif self.args.use_conf_btw_blocks:
-
+                
                 block_out = self.pass_last_fc_block('new_fc', _input)
                 block_out_list.append(block_out)
                 output = self.amd_combine_logits(candidate_list[:,:,-1], block_out, voter_list)
-
+       
             else:
                 block_out = self.pass_last_fc_block('new_fc', _input)
                 output = self.amd_combine_logits(candidate_list[:,:,-1], block_out, voter_list)
@@ -679,8 +671,8 @@ class TSN_Amd(nn.Module):
     
                 if not self.training:
                     modify_candidate_list = []
+                    max_i = 16
                     for b_i in range(batch_size):
-                        max_i = 16 #was located @ before batch for loop
                         for t_i in range(self.time_steps):
                             if choose_selected_es[b_i,t_i,0] == 1:
                                 max_i = (t_i+1)
@@ -694,6 +686,10 @@ class TSN_Amd(nn.Module):
                     output = self.amd_combine_logits(candidate_log_list[:,:,-1], block_out, voter_list)
                 else:
                     candidate_log_list = torch.stack(candidate_log_list, dim=2)
+<<<<<<< HEAD
+                    
+=======
+>>>>>>> 098a40853387f1a4ed3a29a47f7babd17791d56c
                 return_supp = choose_selected_es
 
             else:
@@ -701,7 +697,7 @@ class TSN_Amd(nn.Module):
                 candidate_log_list = torch.stack(candidate_log_list, dim=2)
             
             
-        elif self.args.amd_consensus_type == "random":
+        elif self.args.amd_consensus_type == "random_avg":
             block_out = self.pass_last_fc_block('new_fc', _input)
             
             r_all = torch.zeros(batch_size, self.time_steps, self.amd_action_dim).cuda()
@@ -710,13 +706,19 @@ class TSN_Amd(nn.Module):
                     r_all[i_bs, i_t, torch.randint(self.amd_action_dim, [1])] = 1.0
             
             output = self.amd_combine_logits(r_all[:,:,-1], block_out, voter_list)
+<<<<<<< HEAD
+            candidate_log_list = r_all.unsqueeze(-2).expand(-1,-1,5,-1)
+=======
             candidate_log_list = r_all[:,:,-1].unsqueeze(-1).expand(-1,-1,5)
         
+>>>>>>> 098a40853387f1a4ed3a29a47f7babd17791d56c
         elif self.args.amd_consensus_type == "lstm":
             block_out = None
             output = self.pass_last_rnn_block('new_fc', _input, candidate_list)
-            candidate_log_list = torch.stack(candidate_log_list, dim=2)
-            
+             
+#         elif self.args.amd_consensus_type is 'attention':
+#             _att_input = _input[:, t] * candidate_list[:,t,-1].unsqueeze(-1)
+#             attention = ScaledDotProductAttention(temperature=64 ** 0.5)
             
         if self.args.skip_twice:
             return output.squeeze(1), candidate_log_list, torch.stack(all_policy_result_list, dim=2), torch.stack(block_out_list, dim=2), block_out
@@ -726,7 +728,12 @@ class TSN_Amd(nn.Module):
         else:
             return output.squeeze(1), candidate_log_list, None, None, block_out
             
+<<<<<<< HEAD
+        
+        
+=======
 
+>>>>>>> 098a40853387f1a4ed3a29a47f7babd17791d56c
     def amd_distil_combine_logits(self, r_l, base_out_l):
         # r_l        B, T, K, 
         # base_out   B, T, K, #class
