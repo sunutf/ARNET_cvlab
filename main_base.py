@@ -546,8 +546,8 @@ def main():
                     'state_dict': model.state_dict(),
                     'optimizer': optimizer.state_dict(),
                     'best_prec1': prec_record.best_val,
-                }, mmap_record.is_current_best(), exp_full_path)
-
+#                 }, mmap_record.is_current_best(), exp_full_path)
+                }, True, (exp_full_path.replace('.pth', '{}.pth'.format(epoch+1)))
     if use_ada_framework and not test_mode:
         print("Best train usage:")
         print(best_train_usage_str)
