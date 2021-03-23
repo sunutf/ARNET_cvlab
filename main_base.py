@@ -547,7 +547,7 @@ def main():
                     'optimizer': optimizer.state_dict(),
                     'best_prec1': prec_record.best_val,
 #                 }, mmap_record.is_current_best(), exp_full_path)
-                }, True, (exp_full_path.replace('.pth', '{}.pth'.format(epoch+1)))
+                }, True, exp_full_path, epoch+1)
     if use_ada_framework and not test_mode:
         print("Best train usage:")
         print(best_train_usage_str)
@@ -607,7 +607,6 @@ def amd_init_gflops_table():
         else:
             gflops_table[str(args.arch) + "basefc"] += default_gflops_table[str(args.arch) + name + "cnn"] 
 
-        
         
     print("gflops_table: from base to ")
     for k in gflops_table:
@@ -934,13 +933,15 @@ def early_stop_criterion_loss(criterion, all_policy_r, early_stop_r, feat_outs, 
     time_length = feat_outs.shape[1]
     layer_cnt   = feat_outs.shape[2]
     
+    threshold = 0.25
     selected_r = all_policy_r[:,:,-1,-1].unsqueeze(-1) # B,T, 1
     selected_r_bool = selected_r > 0.5
     
     take_selected = torch.tensor(selected_r_bool, dtype=torch.long).cuda()
     selected_feat_outs = selected_r * feat_outs[:,:,-1,:] #using last prediction  B, T, #class
-    
     early_stop_gt_loss = 0
+    
+    answer_sheet = None
     for b_i in range(batch_size):
         compare_pred_dict = {}
         target_var = target[b_i, 0]
@@ -952,8 +953,19 @@ def early_stop_criterion_loss(criterion, all_policy_r, early_stop_r, feat_outs, 
             key_max = time_length-1
             answer_sheet = torch.ones(time_length,  dtype=torch.long).cuda()
         else:
+            withdraw_flag = True
             key_max = max(compare_pred_dict.keys(), key=(lambda k: compare_pred_dict[k][target_var]))
-            answer_sheet = torch.cat((torch.ones(key_max,  dtype=torch.long), torch.zeros(1,  dtype=torch.long)), dim=0).cuda()
+            for i in compare_pred_dict.keys():
+                if i > key_max:
+                    if (compare_pred_dict[key_max][target_var] - compare_pred_dict[i][target_var]) > threshold:
+                        answer_sheet = torch.cat((torch.ones(key_max,  dtype=torch.long), torch.zeros(1,  dtype=torch.long)), dim=0).cuda()
+                        withdraw_flag = False
+                        break
+            
+            if withdraw_flag is True:
+                key_max = time_length-1
+                answer_sheet = torch.ones(time_length,  dtype=torch.long).cuda()
+#         print('{0} {1} {2}'.format(key_max, early_stop_r[b_i, :(key_max+1), :].shape, answer_sheet.shape))        
         early_stop_gt_loss += criterion(early_stop_r[b_i, :(key_max+1), :], answer_sheet)/(key_max + 1)
 
     return early_stop_gt_loss / batch_size
@@ -1799,7 +1811,8 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
     return mAP, mmAP, top1.avg, usage_str if use_ada_framework else None, gflops
 
 
-def save_checkpoint(state, is_best, exp_full_path):
+def save_checkpoint(state, is_best, exp_full_path, epoch):
+    torch.save(state, '{}/models/ckpt{:03}.pth.tar'.format(exp_full_path, epoch))
     if is_best:
         torch.save(state, '%s/models/ckpt.best.pth.tar' % (exp_full_path))
 
