@@ -8,7 +8,7 @@ from torch import nn
 from thop import profile
 
 feat_dim_of_res50_block = {
-    'base' : 0,
+    'base' : 64,
     'conv_2' : 256,
     'conv_3' : 512,
     'conv_4' : 1024,
@@ -100,15 +100,16 @@ def amd_get_gflops_params(model_name, block, num_classes, resolution=224,case=No
         
        
     
-    elif case is "rnn" and block is not "base" and block is not "base_fc":
+    elif case is "rnn" and block is not "base_fc":
         model = torch.nn.Sequential(
             torch.nn.AdaptiveAvgPool2d(output_size=(1, 1)),
             SqueezeTwice(),
             torch.nn.Linear(feat_dim, feat_dim),
             LstmFc(feat_dim, hidden_dim)
         )
-
-        if block is "conv_2":
+        if block is "base":
+            submodel = torch.nn.Sequential(*(list(base_model.children())[:4]))
+        elif block is "conv_2":
             submodel = torch.nn.Sequential(*(list(base_model.children())[:5]))
         elif block is "conv_3":
             submodel = torch.nn.Sequential(*(list(base_model.children())[:6]))
@@ -137,14 +138,14 @@ def amd_get_gflops_params(model_name, block, num_classes, resolution=224,case=No
 
 if __name__ == "__main__":
     model_name = "resnet50"
-    block_list = ["conv_2", "conv_3", "conv_4", "conv_5", "base", "base_fc"]
+    block_list = ["base", "conv_2", "conv_3", "conv_4", "conv_5", "base_fc"]
     num_classes = 100
     case_list = ["cnn", "rnn"]
     hidden_dim=512
     
     for case in case_list:
         for block in block_list:
-            _flops, _params = amd_get_gflops_params(model_name, block, num_classes, resolution=224, case=case, hidden_dim=hidden_dim)
+            _flops, _params = amd_get_gflops_params(model_name, block, num_classes, resolution=192, case=case, hidden_dim=hidden_dim)
             print("%s , %s | %.5f | %.5f" % (case, block, _flops, _params))
 
     

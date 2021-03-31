@@ -571,7 +571,7 @@ def amd_init_gflops_table():
     resolution = args.rescale_to
     
     """get gflops of block even it not using"""
-    default_block_list = ["conv_2", "conv_3", "conv_4", "conv_5", "base"]
+    default_block_list = ["base", "conv_2", "conv_3", "conv_4", "conv_5"]
     default_case_list = ["cnn", "rnn"]
     resize = int(args.rescale_to)
    
@@ -595,16 +595,15 @@ def amd_init_gflops_table():
         for j in range(start, index+1):
             if j is 0:
                 gflops_table[str(args.arch) + using_block + "cnn"] = default_gflops_table[str(args.arch) + "base"]
-            gflops_table[str(args.arch) + using_block + "cnn"] += default_gflops_table[str(args.arch) + default_block_list[j] + "cnn"]
+            else:
+                gflops_table[str(args.arch) + using_block + "cnn"] += default_gflops_table[str(args.arch) + default_block_list[j] + "cnn"]
         start = index+1
     
     """get gflops of all pass block"""
-    gflops_table[str(args.arch) + "basefc"] = 0
+    gflops_table[str(args.arch) + "basefc"] = default_gflops_table[str(args.arch) + "basefc"] 
     for last_block in range(start, len(default_block_list)):
         name = default_block_list[last_block]
-        if name is "base":
-            gflops_table[str(args.arch) + "basefc"] += default_gflops_table[str(args.arch) + "basefc"] 
-        else:
+        if name is not "base":
             gflops_table[str(args.arch) + "basefc"] += default_gflops_table[str(args.arch) + name + "cnn"] 
 
         
@@ -942,30 +941,29 @@ def early_stop_criterion_loss(criterion, all_policy_r, early_stop_r, feat_outs, 
     early_stop_gt_loss = 0
     
     answer_sheet = None
+    key_max = time_length
     for b_i in range(batch_size):
         compare_pred_dict = {}
         target_var = target[b_i, 0]
         pred = None
+        stop_flag_cnt = 2
         for t_i in range(time_length):
             if take_selected[b_i, t_i, 0] == 1:
                 compare_pred_dict[t_i] =  F.softmax(torch.sum(selected_feat_outs[b_i,:(t_i+1),:], dim=[0]), dim=-1) # #class
-        if not compare_pred_dict:
+                if compare_pred_dict[t_i][target_var] > 0.85:
+                    stop_flag_cnt -= 1
+                    if stop_flag_cnt == 0:
+#                         print("early_stop_g.t._activate")
+                        key_max = t_i
+                        break
+                
+        if key_max is time_length:
             key_max = time_length-1
             answer_sheet = torch.ones(time_length,  dtype=torch.long).cuda()
         else:
-            withdraw_flag = True
-            key_max = max(compare_pred_dict.keys(), key=(lambda k: compare_pred_dict[k][target_var]))
-            for i in compare_pred_dict.keys():
-                if i > key_max:
-                    if (compare_pred_dict[key_max][target_var] - compare_pred_dict[i][target_var]) > threshold:
-                        answer_sheet = torch.cat((torch.ones(key_max,  dtype=torch.long), torch.zeros(1,  dtype=torch.long)), dim=0).cuda()
-                        withdraw_flag = False
-                        break
-            
-            if withdraw_flag is True:
-                key_max = time_length-1
-                answer_sheet = torch.ones(time_length,  dtype=torch.long).cuda()
-#         print('{0} {1} {2}'.format(key_max, early_stop_r[b_i, :(key_max+1), :].shape, answer_sheet.shape))        
+#             key_max = max(compare_pred_dict.keys(), key=(lambda k: compare_pred_dict[k][target_var]))
+            answer_sheet = torch.cat((torch.ones(key_max,  dtype=torch.long), torch.zeros(1,  dtype=torch.long)), dim=0).cuda()
+        
         early_stop_gt_loss += criterion(early_stop_r[b_i, :(key_max+1), :], answer_sheet)/(key_max + 1)
 
     return early_stop_gt_loss / batch_size
@@ -1234,7 +1232,7 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
                     policy_gt_losses.update(policy_gt_loss.item(), input.size(0))
                     
                 if args.use_early_stop:
-                    early_stop_gt_loss = args.efficency_weight * early_stop_criterion_loss(criterion, all_policy_r, early_stop_r, feat_outs, target_var)
+                    early_stop_gt_loss = args.efficency_weight * 10 * early_stop_criterion_loss(criterion, all_policy_r, early_stop_r, feat_outs, target_var)
                     es_gt_losses.update(early_stop_gt_loss.item(), input.size(0))
 
                 if args.use_reinforce and not args.freeze_policy:

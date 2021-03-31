@@ -113,32 +113,32 @@ class TSN_Amd(nn.Module):
             return linear_model
         
         for name in self.block_cnn_dict.keys():
-            if name is not 'base':
-                feat_dim = feat_dim_of_res50_block[name]
-                self.block_fc_dict[name] = torch.nn.Sequential(
-                    torch.nn.AdaptiveAvgPool2d(output_size=(1, 1)),
-                    SqueezeTwice(),
-                    make_a_linear(feat_dim, feat_dim)
-                )
-                if self.args.diff_to_rnn:
-                    feat_dim = feat_dim*2
-                    
-                self.block_rnn_dict[name] = torch.nn.LSTMCell(input_size=feat_dim, hidden_size=self.args.hidden_dim)
-                self.action_fc_dict[name] = make_a_linear(self.args.hidden_dim, self.amd_action_dim)
-                if self.args.use_early_stop:
-                    self.early_stop_decision_block = make_a_linear(self.num_class, self.amd_action_dim) #kill or not
-                
-                if self.args.use_distil_loss_to_rnn or self.args.use_conf_btw_blocks:
-                    self.block_pred_rnn_fc_dict[name] =  make_a_linear(self.args.hidden_dim, self.num_class)
-                
-                elif self.args.use_distil_loss_to_cnn:
-                    self.block_pred_cnn_fc_dict[name] = torch.nn.Sequential(
-                    torch.nn.AdaptiveAvgPool2d(output_size=(1, 1)),
-                    SqueezeTwice(),
-                    make_a_linear(feat_dim, feat_dim)
-                )
-                if self.args.voting_policy:
-                    self.vote_fc_dict[name] =  make_a_linear(self.args.hidden_dim, self.vote_dim)
+#             if name is not 'base':
+            feat_dim = feat_dim_of_res50_block[name]
+            self.block_fc_dict[name] = torch.nn.Sequential(
+                torch.nn.AdaptiveAvgPool2d(output_size=(1, 1)),
+                SqueezeTwice(),
+                make_a_linear(feat_dim, feat_dim)
+            )
+            if self.args.diff_to_rnn:
+                feat_dim = feat_dim*2
+
+            self.block_rnn_dict[name] = torch.nn.LSTMCell(input_size=feat_dim, hidden_size=self.args.hidden_dim)
+            self.action_fc_dict[name] = make_a_linear(self.args.hidden_dim, self.amd_action_dim)
+            if self.args.use_early_stop:
+                self.early_stop_decision_block = make_a_linear(self.num_class, self.amd_action_dim) #kill or not
+
+            if self.args.use_distil_loss_to_rnn or self.args.use_conf_btw_blocks:
+                self.block_pred_rnn_fc_dict[name] =  make_a_linear(self.args.hidden_dim, self.num_class)
+
+            elif self.args.use_distil_loss_to_cnn:
+                self.block_pred_cnn_fc_dict[name] = torch.nn.Sequential(
+                torch.nn.AdaptiveAvgPool2d(output_size=(1, 1)),
+                SqueezeTwice(),
+                make_a_linear(feat_dim, feat_dim)
+            )
+            if self.args.voting_policy:
+                self.vote_fc_dict[name] =  make_a_linear(self.args.hidden_dim, self.vote_dim)
 
         
         feat_dim = 2048   #getattr(self.base_model, 'fc').in_features
@@ -602,42 +602,42 @@ class TSN_Amd(nn.Module):
             kwargs["tau"] = None
         tau = kwargs["tau"]
         voter_list = None
-        with torch.no_grad():
-            for name in self.block_cnn_dict.keys():
-                # input image tensor with 224 size
-                _input = self.pass_cnn_block(name, _input) 
+        for name in self.block_cnn_dict.keys():
+            # input image tensor with 224 size
+            _input = self.pass_cnn_block(name, _input) 
 
-                if name is not 'base' and name in self.block_rnn_list:
-                    if self.args.voting_policy:
-                        voter_list = torch.zeros(batch_size, self.time_steps, 1, dtype=torch.float).cuda() #B, T, 1
-                        _candidate_list, voter_list, _ = self.gate_fc_rnn_block(name, _input, candidate_list, tau, voter_list)
+#             if name is not 'base' and name in self.block_rnn_list:
+            if name in self.block_rnn_list:
+                if self.args.voting_policy:
+                    voter_list = torch.zeros(batch_size, self.time_steps, 1, dtype=torch.float).cuda() #B, T, 1
+                    _candidate_list, voter_list, _ = self.gate_fc_rnn_block(name, _input, candidate_list, tau, voter_list)
 
-                    # update candidate_list based on policy rnn
-                    else :
-                        _candidate_list, hx_list, raw_r_list = self.gate_fc_rnn_block(name, _input, candidate_list, tau, None)
+                # update candidate_list based on policy rnn
+                else :
+                    _candidate_list, hx_list, raw_r_list = self.gate_fc_rnn_block(name, _input, candidate_list, tau, None)
 
-                    if self.args.use_distil_loss_to_rnn :
-                        skip_new_list = (candidate_list[:,:,-1] - _candidate_list[:,:,-1]).cuda()
-                        skip_result_list.append(skip_new_list)
-                        block_out_list.append(self.pass_pred_block(name, hx_list))
+                if self.args.use_distil_loss_to_rnn :
+                    skip_new_list = (candidate_list[:,:,-1] - _candidate_list[:,:,-1]).cuda()
+                    skip_result_list.append(skip_new_list)
+                    block_out_list.append(self.pass_pred_block(name, hx_list))
 
-                    elif self.args.use_distil_loss_to_cnn:
-                        base_out = hx_list
-                        block_out_list.append(self.block_fc_backbone(name, base_out, self.block_pred_cnn_fc_dict[name]))
+                elif self.args.use_distil_loss_to_cnn:
+                    base_out = hx_list
+                    block_out_list.append(self.block_fc_backbone(name, base_out, self.block_pred_cnn_fc_dict[name]))
 
-                    elif self.args.use_conf_btw_blocks:
-                        block_out_list.append(self.pass_pred_block(name, hx_list))
+                elif self.args.use_conf_btw_blocks:
+                    block_out_list.append(self.pass_pred_block(name, hx_list))
 
-                    candidate_list = _candidate_list
+                candidate_list = _candidate_list
 
-    #                 take_bool = candidate_list[:,:,1] > 0.5
-    #                 candidate_log_list.append(torch.tensor(take_bool, dtype=torch.float).cuda())
+#                 take_bool = candidate_list[:,:,1] > 0.5
+#                 candidate_log_list.append(torch.tensor(take_bool, dtype=torch.float).cuda())
 
-                    candidate_log_list.append(candidate_list[:,:,-1])
-                    if self.args.skip_twice:
-                        all_policy_result_list.append(candidate_list)
-                    if self.args.use_conf_btw_blocks:
-                        all_policy_result_list.append(raw_r_list)
+                candidate_log_list.append(candidate_list[:,:,-1])
+                if self.args.skip_twice:
+                    all_policy_result_list.append(candidate_list)
+                if self.args.use_conf_btw_blocks:
+                    all_policy_result_list.append(raw_r_list)
         
             
         return_supp = None
@@ -652,11 +652,10 @@ class TSN_Amd(nn.Module):
                 
                 output = self.amd_distil_combine_logits(skip_r_l, block_r_l)
             elif self.args.use_conf_btw_blocks:
-                with torch.no_grad():
-                    block_out = self.pass_last_fc_block('new_fc', _input)
-                    block_out_list.append(block_out)
-                    output = self.amd_combine_logits(candidate_list[:,:,-1], block_out, voter_list)
-       
+                block_out = self.pass_last_fc_block('new_fc', _input)
+                block_out_list.append(block_out)
+                output = self.amd_combine_logits(candidate_list[:,:,-1], block_out, voter_list)
+
             else:
                 block_out = self.pass_last_fc_block('new_fc', _input)
                 output = self.amd_combine_logits(candidate_list[:,:,-1], block_out, voter_list)
@@ -700,7 +699,8 @@ class TSN_Amd(nn.Module):
             r_all = torch.zeros(batch_size, self.time_steps, self.amd_action_dim).cuda()
             for i_bs in range(batch_size):
                 for i_t in range(self.time_steps):
-                    r_all[i_bs, i_t, torch.randint(self.amd_action_dim, [1])] = 1.0
+                    rand = 1 if torch.randint(100, [1]) < self.args.random_ratio else 0
+                    r_all[i_bs, i_t, rand] = 1.0
             
             output = self.amd_combine_logits(r_all[:,:,-1], block_out, voter_list)
             candidate_log_list = r_all[:,:,-1].unsqueeze(-1).expand(-1,-1,5)
