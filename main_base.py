@@ -645,6 +645,7 @@ def amd_cal_eff(r, all_policy_r):
     for i in range(1, len(gflops_vec)):
         gflops_vec[i] += gflops_vec[i-1]
     
+
     total_gflops = gflops_vec[-1]
     for i in range(len(gflops_vec)):
         gflops_vec[i] = total_gflops - gflops_vec[i]
@@ -653,14 +654,13 @@ def amd_cal_eff(r, all_policy_r):
 #     uni_gflops = np.sum(gflops_vec)/r.shape[2]
     if args.use_gflops_loss:
         r_loss = torch.tensor(gflops_vec).cuda()
+#         r_loss = torch.tensor([uni_gflops, uni_gflops, uni_gflops,uni_gflops, uni_gflops, uni_gflops, uni_gflops]).cuda()[:r.shape[2]]
     else:
         r_loss = torch.tensor([4., 2., 1., 0.5, 0.25]).cuda()[:r.shape[2]]
     
 
-
     loss = torch.sum(torch.mean(r, dim=[0, 1]) * r_loss)
     each_losses.append(loss.detach().cpu().item())
-    
     
 
     # TODO(yue) uniform loss

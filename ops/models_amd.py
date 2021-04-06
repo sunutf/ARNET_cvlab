@@ -36,7 +36,7 @@ class TSN_Amd(nn.Module):
         self.crop_num = crop_num
         self.consensus_type = consensus_type
         self.pretrain = pretrain
-        
+        self.reverese_try_cnt = 0
         self.fc_lr5 = fc_lr5
 
         # TODO(yue)
@@ -488,10 +488,13 @@ class TSN_Amd(nn.Module):
                     if self.args.use_conf_btw_blocks:
                         raw_r_list.append(r_t)
                     
+                    
+#                     take_old = old_r_t[:,-2].unsqueeze(-1)
+#                     take_curr = old_r_t[:,-1].unsqueeze(-1)
                     take_bool =  old_r_t[:,-1].unsqueeze(-1) > 0.5
-                    take_old = torch.tensor(~take_bool, dtype=torch.float).cuda()
-                    take_curr = torch.tensor(take_bool, dtype=torch.float).cuda()
-                    r_t = old_r_t * take_old + r_t * take_curr
+                    take_old_ = torch.tensor(~take_bool, dtype=torch.float).cuda()
+                    take_curr_ = torch.tensor(take_bool, dtype=torch.float).cuda()
+                    r_t = old_r_t * take_old_ + r_t * take_curr_
                                         
                     
                     check_to_store_bool = r_t[:,-1].unsqueeze(-1)>0.5
@@ -500,7 +503,7 @@ class TSN_Amd(nn.Module):
                     r_list.append(r_t)  
                                                       
                     if old_hx is not None:
-                        hx = old_hx * take_old + hx * take_curr
+                        hx = old_hx * take_old_ + hx * take_curr_
 
                     hx_list.append(hx)
                     old_hx = hx
@@ -621,11 +624,10 @@ class TSN_Amd(nn.Module):
     def late_fusion(self, base_out_list, in_matrix, out_matrix):
         return base_out_list
 
-    def forward(self, *argv, **kwargs):
+    def forward(self, *argv, **kwargs): 
         input_list = kwargs["input"]
         batch_size = input_list[0].shape[0]  # TODO(yue) input[0] B*(TC)*H*W
         _input = input_list[0]
-
 #         reverse_bool = torch.randint(0, 2, [1]) > 0# 1(reverse)
         
 #         if reverse_bool:
@@ -635,6 +637,7 @@ class TSN_Amd(nn.Module):
 #             _input = _input.view(_b, _t, _c, _h, _w)
 #             _input = torch.flip(_input, [1])
 #             _input = _input.view(_b, _tc, _h, _w)
+
         candidate_list = torch.zeros(batch_size, self.time_steps, 1)
         if self.args.skip_twice:
             candidate_list = torch.cat([torch.zeros(batch_size, self.time_steps, 1), torch.zeros(batch_size, self.time_steps, 1), torch.ones(batch_size, self.time_steps, 1)], 2) #B, T, A
