@@ -72,9 +72,15 @@ class TSN_Amd(nn.Module):
                 self.block_pred_rnn_fc_dict = nn.ModuleDict()
             elif self.args.use_distil_loss_to_cnn:
                 self.block_pred_cnn_fc_dict = nn.ModuleDict()
+                
             if self.args.voting_policy:
                 self.vote_fc_dict = nn.ModuleDict()
                 self.vote_dim = 2 #0(not support), 1(support)
+                
+            if self.args.use_local_policy_module:
+                self.local_policy_dict = nn.ModuleDict()
+
+
             
             self.block_rnn_list = self.args.block_rnn_list
             
@@ -133,17 +139,28 @@ class TSN_Amd(nn.Module):
 
             elif self.args.use_distil_loss_to_cnn:
                 self.block_pred_cnn_fc_dict[name] = torch.nn.Sequential(
-                torch.nn.AdaptiveAvgPool2d(output_size=(1, 1)),
-                SqueezeTwice(),
-                make_a_linear(feat_dim, feat_dim)
-            )
+                    torch.nn.AdaptiveAvgPool2d(output_size=(1, 1)),
+                    SqueezeTwice(),
+                    make_a_linear(feat_dim, feat_dim)
+                )
             if self.args.voting_policy:
                 self.vote_fc_dict[name] =  make_a_linear(self.args.hidden_dim, self.vote_dim)
+                
+            if self.args.use_local_policy_module:
+                self.local_policy_dict[name] = torch.nn.Sequential(
+                    torch.nn.AdaptiveAvgPool2d(output_size=(1, 1)),
+                    SqueezeTwice(),
+                    make_a_linear(3*feat_dim, feat_dim),
+                    torch.nn.ReLU(),
+                    make_a_linear(feat_dim, self.amd_action_dim)    
+                )
+                
+                
 
         
-        feat_dim = 2048   #getattr(self.base_model, 'fc').in_features
+        lstm_feat_dim = 2048   #getattr(self.base_model, 'fc').in_features
         if self.args.amd_consensus_type == "lstm":
-            self.last_rnn = torch.nn.LSTMCell(input_size=feat_dim, hidden_size=feat_dim)
+            self.last_rnn = torch.nn.LSTMCell(input_size=feat_dim, hidden_size=lstm_feat_dim)
             self.new_fc = make_a_linear(feat_dim, self.num_class)
 
         
@@ -351,6 +368,8 @@ class TSN_Amd(nn.Module):
         voter_list = []
         hx_list = []
         raw_r_list = []
+        redundant_r_list = []
+        
         sup_return = None
         sup2_return = None
         if name in self.block_rnn_dict.keys(): # gate activate = policy on 
@@ -363,8 +382,10 @@ class TSN_Amd(nn.Module):
             hx = init_hidden(batch_size, self.args.hidden_dim)
             cx = init_hidden(batch_size, self.args.hidden_dim)
             
-            store_recent_pass_out = torch.zeros(batch_size, base_out.shape[-1], dtype=torch.long).cuda()
+            store_recent_pass_out = torch.zeros(batch_size, base_out.shape[-1], dtype=torch.long).cuda() 
             store_recent_pass = torch.zeros(batch_size, 1, dtype=torch.long).cuda()
+            
+            prev_base_out = torch.zeros(batch_size, base_out.shape[-1], dtype=torch.long).cuda()
 
             for t in range(self.time_steps):
                 old_r_t = candidate_list[:, t, :].cuda() #B, K
@@ -421,6 +442,23 @@ class TSN_Amd(nn.Module):
                         
                         r_t = hard_skip_action * skip_r_t + depend_policy_action * r_t
                                                 
+                    elif self.args.use_local_policy_module:
+                        local_compare_input = torch.cat((prev_base_out, rnn_input, (rnn_input - prev_base_out)), dim = 1)
+                        redundant_r = F.softmax(local_policy_dict[name], dim=1).clamp(min=1e-8)
+                        
+                        hx, cx = self.block_rnn_dict[name](rnn_input, (hx, cx))
+                        feat_t = hx
+                        noisy_r = F.softmax(self.action_fc_dict[name](feat_t), dim=1).clamp(min=1e-8)
+                        
+                        p_t = torch.log(redundant_r * noisy_r)
+                        r_t = torch.cat(
+                            [F.gumbel_softmax(p_t[b_i:b_i + 1], tau, True) for b_i in range(p_t.shape[0])])
+                        
+                        redundant_r_list.append(redundant_r)
+                        noisy_r_list.append(noisy_r)
+                        
+                        prev_base_out = rnn_input
+
 
                     else:
                         hx, cx = self.block_rnn_dict[name](rnn_input, (hx, cx))
@@ -491,6 +529,12 @@ class TSN_Amd(nn.Module):
             if self.args.voting_policy:
                 sup_return = voter_stack + torch.stack(voter_list, dim=1)
         
+            if self.args.use_local_policy_module:
+                redundant_t = torch.stack(redundant_r_list, dim=1) #B, T, 2
+                noisy_t     = torch.stack(noisy_r_list, dim=1) #B, T, 2
+                duar_r_list = torch.cat(redundant_t.unsqueeze(-2), noisy_t.unsqueeze(-2), dim = -2) #B, T, 2', 2
+                
+                return r_list, sup_return, sup2_return, dual_r_list, similarity_gt_list
         return r_list, sup_return, sup2_return
 
     
@@ -581,6 +625,16 @@ class TSN_Amd(nn.Module):
         input_list = kwargs["input"]
         batch_size = input_list[0].shape[0]  # TODO(yue) input[0] B*(TC)*H*W
         _input = input_list[0]
+
+#         reverse_bool = torch.randint(0, 2, [1]) > 0# 1(reverse)
+        
+#         if reverse_bool:
+#             _b, _tc, _h, _w = _input.shape  
+#             _t, _c = _tc // 3, 3
+
+#             _input = _input.view(_b, _t, _c, _h, _w)
+#             _input = torch.flip(_input, [1])
+#             _input = _input.view(_b, _tc, _h, _w)
         candidate_list = torch.zeros(batch_size, self.time_steps, 1)
         if self.args.skip_twice:
             candidate_list = torch.cat([torch.zeros(batch_size, self.time_steps, 1), torch.zeros(batch_size, self.time_steps, 1), torch.ones(batch_size, self.time_steps, 1)], 2) #B, T, A
@@ -590,6 +644,7 @@ class TSN_Amd(nn.Module):
         candidate_log_list = []
         all_policy_result_list = []
         skip_result_list = []
+        all_dual_policy_result_list = []
         block_out_list = []
         take_bool = candidate_list[:,:,-1] > 0.5
         candidate_log_list.append(torch.tensor(take_bool, dtype=torch.float).cuda())
@@ -613,6 +668,9 @@ class TSN_Amd(nn.Module):
                     _candidate_list, voter_list, _ = self.gate_fc_rnn_block(name, _input, candidate_list, tau, voter_list)
 
                 # update candidate_list based on policy rnn
+                elif self.args.use_local_policy_module:
+                    _candidate_list, hx_list, raw_r_list, raw_dual_r_list, similarity_gt_list= self.gate_fc_rnn_block(name, _input, candidate_list, tau, None)
+                    all_dual_policy_result_list.append(raw_dual_r_list)
                 else :
                     _candidate_list, hx_list, raw_r_list = self.gate_fc_rnn_block(name, _input, candidate_list, tau, None)
 
@@ -689,7 +747,10 @@ class TSN_Amd(nn.Module):
                 return_supp = choose_selected_es
 
             else:
-                return_supp = block_out
+                if self.args.use_local_policy_module:
+                    return_supp = all_dual_policy_result_list
+                else:
+                    return_supp = block_out
                 candidate_log_list = torch.stack(candidate_log_list, dim=2)
             
             
@@ -715,8 +776,10 @@ class TSN_Amd(nn.Module):
             
         if self.args.skip_twice:
             return output.squeeze(1), candidate_log_list, torch.stack(all_policy_result_list, dim=2), torch.stack(block_out_list, dim=2), block_out
-        if self.args.use_conf_btw_blocks or self.args.use_early_stop:
+        if self.args.use_conf_btw_blocks or self.args.use_early_stop :
             return output.squeeze(1), candidate_log_list, torch.stack(all_policy_result_list, dim=2), torch.stack(block_out_list, dim=2), return_supp
+        if self.args.use_local_policy_module:
+            return output.squeeze(1), candidate_log_list, torch.stack(all_policy_result_list, dim=2), torch.stack(block_out_list, dim=2), return_supp, similarity_result
        
         else:
             return output.squeeze(1), candidate_log_list, None, None, block_out

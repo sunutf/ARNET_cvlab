@@ -645,12 +645,19 @@ def amd_cal_eff(r, all_policy_r):
     for i in range(1, len(gflops_vec)):
         gflops_vec[i] += gflops_vec[i-1]
     
+    total_gflops = gflops_vec[-1]
+    for i in range(len(gflops_vec)):
+        gflops_vec[i] = total_gflops - gflops_vec[i]
+    gflops_vec[-1] += 0.00001
+
+#     uni_gflops = np.sum(gflops_vec)/r.shape[2]
     if args.use_gflops_loss:
         r_loss = torch.tensor(gflops_vec).cuda()
     else:
         r_loss = torch.tensor([4., 2., 1., 0.5, 0.25]).cuda()[:r.shape[2]]
     
-   
+
+
     loss = torch.sum(torch.mean(r, dim=[0, 1]) * r_loss)
     each_losses.append(loss.detach().cpu().item())
     
@@ -968,7 +975,17 @@ def early_stop_criterion_loss(criterion, all_policy_r, early_stop_r, feat_outs, 
 
     return early_stop_gt_loss / batch_size
         
-
+def dual_policy_criterion_loss(criterion, dual_policy_r, output, target):
+    #dual_policy_r B, T, K, 2, 2 
+    #ouput
+    #target_var
+    
+    target_val = target
+    output_val = output.max(dim=1)[1] #B, 1(argmax)
+    
+    
+            
+    
 
 def get_criterion_loss(criterion, output, target):
     return criterion(output, target[:, 0])
@@ -1211,6 +1228,12 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
                 elif args.use_conf_btw_blocks or args.use_early_stop:
                     output, r, all_policy_r, feat_outs, early_stop_r = model(input=input_var_list, tau=tau)
                     acc_loss = get_criterion_loss(criterion, output, target_var)
+                elif args.use_local_policy_module:
+                    output, r, all_policy_r, feat_outs, dual_policy_r, similarity_gt = model(input=input_var_list, tau=tau)
+                    if args.use_local_policy_module:
+                        dual_policy_r = early_stop_r
+                    acc_loss = get_criterion_loss(criterion, output, target_var)
+             
 
                 else:
                     output, r, all_policy_r, feat_outs, base_outs = model(input=input_var_list, tau=tau)
@@ -1234,6 +1257,16 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
                 if args.use_early_stop:
                     early_stop_gt_loss = args.efficency_weight * 10 * early_stop_criterion_loss(criterion, all_policy_r, early_stop_r, feat_outs, target_var)
                     es_gt_losses.update(early_stop_gt_loss.item(), input.size(0))
+                    
+                if args.use_local_policy_module:
+                    redundant_policy_loss, noisy_policy_loss = dual_policy_criterion_loss(criterion, dual_policy_r, output, target_var)
+                    redundant_policy_loss = args.efficency_weight * redundant_policy_loss
+                    noisy_policy_loss = args.efficency_weight * noisy_policy_loss
+                    
+                    redundant_policy_losses.update(redundant_policy_loss.item(), input.size(0))
+                    noisy_policy_losses.update(noisy_policy_loss.item(), input.size(0))
+                    
+                    
 
                 if args.use_reinforce and not args.freeze_policy:
                     if args.separated:
@@ -1294,7 +1327,9 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
                 loss = acc_loss + eff_loss + policy_gt_loss + inner_aloss 
             else:
                 loss = acc_loss + eff_loss
-                      
+            
+            if args.use_local_policy_module:
+                loss = loss + redundant_policy_loss + noisy_policy_loss
             if args.use_early_stop:
                 loss = loss + early_stop_gt_loss
 #                 loss =  early_stop_gt_loss
@@ -1378,6 +1413,14 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
                     print_output += '\n es_g_l {es_g_loss.val:.4f} ({es_g_loss.avg:.4f}), es_r {es} \t' .format(
                         es_g_loss=es_gt_losses, es = np.nonzero(es_r)
                     )
+                if args.use_local_policy_module:
+                    print_output += '\n red_p_l {red_p_l.val:.4f} ({red_p_l.avg:.4f}), red_r {red_r} \t' .format(
+                        red_p_l = redundant_policy_losses, red_r = np.nonzero(red_r)
+                    )
+                    print_output += '\n noi_p_l {noi_p_l.val:.4f} ({noi_p_l.avg:.4f}), noi_r {noi_r} \t' .format(
+                        noi_p_l = noisy_policy_losses, noi_r = np.nonzero(red_r)
+                    )
+                    
                 print_output += extra_each_loss_str(each_terms)
             if args.show_pred:
                 print_output += elastic_list_print(output[-1, :].detach().cpu().numpy())

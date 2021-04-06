@@ -95,6 +95,8 @@ parser.add_argument('--strong_skip_sim', action='store_true', help='storng skip 
 parser.add_argument('--repeat_batch', default=1, type=int)
 parser.add_argument('--use_early_stop', action='store_true', help='early stopping')
 parser.add_argument('--random_ratio', default=50, type=int)
+parser.add_argument('--use_local_policy_module', action='store_true', help='divide policy module')
+
 
 parser.add_argument('--amd_consensus_type', type=str, default='avg') 
 parser.add_argument('--visual_log', type=str, default="")
