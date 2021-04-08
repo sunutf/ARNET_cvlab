@@ -1589,7 +1589,7 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                     elif args.use_conf_btw_blocks or args.use_early_stop:
                         output, r, all_policy_r, feat_outs, early_stop_r = model(input=input_tuple[:-1 + meta_offset], tau=tau)
                     elif args.use_local_policy_module:
-                        output, r, all_policy_r, base_outs, dual_policy_r, similarity_r = model(input=input_var_list, tau=tau)
+                        output, r, all_policy_r, base_outs, dual_policy_r, similarity_r = model(input=input_tuple[:-1 + meta_offset], tau=tau)
                     else:
                         output, r, all_policy_r, feat_outs, base_outs = model(input=input_tuple[:-1 + meta_offset], tau=tau)
                     acc_loss = get_criterion_loss(criterion, output, target)
@@ -1608,7 +1608,7 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                         policy_gt_losses.update(policy_gt_loss.item(), input.size(0))
                         
                     elif args.use_local_policy_module:
-                        redundant_policy_loss, noisy_policy_loss = dual_policy_criterion_loss(criterion, base_outs, target_var, dual_policy_r, similarity_r)
+                        redundant_policy_loss, noisy_policy_loss = dual_policy_criterion_loss(criterion, base_outs, target, dual_policy_r, similarity_r)
                         redundant_policy_loss = args.efficency_weight * redundant_policy_loss
                         noisy_policy_loss = args.efficency_weight * noisy_policy_loss
 
