@@ -1010,7 +1010,7 @@ def dual_policy_criterion_loss(criterion, base_outs, target, dual_policy_r, simi
     redundant_gt = redundant_gt * noisy_gt #B, T, K
     redundant_p_loss = criterion(redundant_policy_r.contiguous().view(batch_size*_t*policy_cnt, -1), redundant_gt.contiguous().view(batch_size*_t*policy_cnt))
     
-    return redundant_p_loss/ batch_size, noisy_p_loss/ batch_size
+    return redundant_p_loss, noisy_p_loss
 
 
 def get_criterion_loss(criterion, output, target):
