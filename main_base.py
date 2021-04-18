@@ -646,15 +646,15 @@ def amd_cal_eff(r, all_policy_r):
         gflops_vec[i] += gflops_vec[i-1]
     
 
-#     total_gflops = gflops_vec[-1]
-#     for i in range(len(gflops_vec)):
-#         gflops_vec[i] = total_gflops - gflops_vec[i]
-#     gflops_vec[-1] += 0.00001
+    total_gflops = gflops_vec[-1]
+    for i in range(len(gflops_vec)):
+        gflops_vec[i] = total_gflops - gflops_vec[i]
+    gflops_vec[-1] += 0.00001
 
-#     uni_gflops = np.sum(gflops_vec)/r.shape[2]
+    uni_gflops = np.sum(gflops_vec)/r.shape[2]
     if args.use_gflops_loss:
-        r_loss = torch.tensor(gflops_vec).cuda()
-#         r_loss = torch.tensor([uni_gflops, uni_gflops, uni_gflops,uni_gflops, uni_gflops, uni_gflops, uni_gflops]).cuda()[:r.shape[2]]
+#         r_loss = torch.tensor(gflops_vec).cuda()
+        r_loss = torch.tensor([uni_gflops, uni_gflops, uni_gflops,uni_gflops, uni_gflops, uni_gflops, uni_gflops]).cuda()[:r.shape[2]]
     else:
         r_loss = torch.tensor([4., 2., 1., 0.5, 0.25]).cuda()[:r.shape[2]]
     
@@ -957,7 +957,7 @@ def early_stop_criterion_loss(criterion, all_policy_r, early_stop_r, feat_outs, 
         for t_i in range(time_length):
             if take_selected[b_i, t_i, 0] == 1:
                 compare_pred_dict[t_i] =  F.softmax(torch.sum(selected_feat_outs[b_i,:(t_i+1),:], dim=[0]), dim=-1) # #class
-                if compare_pred_dict[t_i][target_var] > 0.85:
+                if compare_pred_dict[t_i][target_var] > 0.99:
                     stop_flag_cnt -= 1
                     if stop_flag_cnt == 0:
 #                         print("early_stop_g.t._activate")
@@ -1282,8 +1282,8 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
                     
                 if args.use_local_policy_module:
                     redundant_policy_loss, noisy_policy_loss = dual_policy_criterion_loss(criterion, base_outs, target_var, dual_policy_r, similarity_r)
-                    redundant_policy_loss = args.efficency_weight * redundant_policy_loss
-                    noisy_policy_loss = args.efficency_weight * noisy_policy_loss
+                    redundant_policy_loss = redundant_policy_loss
+                    noisy_policy_loss = noisy_policy_loss
                     
                     redundant_policy_losses.update(redundant_policy_loss.item(), input.size(0))
                     noisy_policy_losses.update(noisy_policy_loss.item(), input.size(0))
@@ -1373,7 +1373,6 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
         else:
             loss = loss / accumulation_steps
             loss.backward()
-            
         if (i+1) % accumulation_steps == 0:
             if args.clip_gradient is not None:
                 clip_grad_norm_(model.parameters(), args.clip_gradient)
@@ -1609,8 +1608,8 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                         
                     elif args.use_local_policy_module:
                         redundant_policy_loss, noisy_policy_loss = dual_policy_criterion_loss(criterion, base_outs, target, dual_policy_r, similarity_r)
-                        redundant_policy_loss = args.efficency_weight * redundant_policy_loss
-                        noisy_policy_loss = args.efficency_weight * noisy_policy_loss
+                        redundant_policy_loss = redundant_policy_loss
+                        noisy_policy_loss = noisy_policy_loss
 
                         redundant_policy_losses.update(redundant_policy_loss.item(), input.size(0))
                         noisy_policy_losses.update(noisy_policy_loss.item(), input.size(0))

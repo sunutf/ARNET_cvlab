@@ -465,10 +465,20 @@ class TSN_Amd(nn.Module):
                         noisy_r = F.softmax(self.action_fc_dict[name](feat_t), dim=1).clamp(min=1e-8)
                         
                        
-                        p_t = torch.log(redundant_r * noisy_r) #B,2 * B,2
-                        r_t = torch.cat([F.gumbel_softmax(p_t[b_i:b_i + 1], tau, True) for b_i in range(p_t.shape[0])])
-                        redundant_r_list.append(redundant_r)
-                        noisy_r_list.append(noisy_r)
+                        p_r_t = torch.log(redundant_r)
+                        redundant_r_t = torch.cat(
+                            [F.gumbel_softmax(p_r_t[b_i:b_i + 1], tau, True) for b_i in range(p_r_t.shape[0])])
+                        
+                        p_n_t = torch.log(noisy_r)
+                        noisy_r_t = torch.cat(
+                            [F.gumbel_softmax(p_n_t[b_i:b_i + 1], tau, True) for b_i in range(p_n_t.shape[0])])
+                        
+                        r_t = redundant_r_t*noisy_r_t
+#                         print(redundant_r_t, noisy_r_t, r_t, similaritylist)
+                        #p_t = torch.log(redundant_r * noisy_r) #B,2 * B,2
+                        #r_t = torch.cat([F.gumbel_softmax(p_t[b_i:b_i + 1], tau, True) for b_i in range(p_t.shape[0])])
+                        redundant_r_list.append(redundant_r_t)
+                        noisy_r_list.append(noisy_r_t)
                         
                         _prev_input_data_t = _input_data_t
 
@@ -502,8 +512,8 @@ class TSN_Amd(nn.Module):
                         raw_r_list.append(r_t)
                     
                     
-#                     take_old = old_r_t[:,-2].unsqueeze(-1)
-#                     take_curr = old_r_t[:,-1].unsqueeze(-1)
+                    take_old = old_r_t[:,-2].unsqueeze(-1)
+                    take_curr = old_r_t[:,-1].unsqueeze(-1)
                     take_bool =  old_r_t[:,-1].unsqueeze(-1) > 0.5
                     take_old_ = torch.tensor(~take_bool, dtype=torch.float).cuda()
                     take_curr_ = torch.tensor(take_bool, dtype=torch.float).cuda()
@@ -516,7 +526,11 @@ class TSN_Amd(nn.Module):
                     r_list.append(r_t)  
                                                       
                     if old_hx is not None:
-                        hx = old_hx * take_old_ + hx * take_curr_
+#                         hx = old_hx * take_old_ + hx * take_curr_
+                        take_now_bool = r_t[:,-1].unsqueeze(-1) > 0.5
+                        take_now_curr = torch.tensor(take_now_bool, dtype=torch.float).cuda()
+                        hx = hx * take_now_curr
+
                     
                     hx_list.append(hx)
                     old_hx = hx
