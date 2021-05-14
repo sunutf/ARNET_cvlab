@@ -72,6 +72,9 @@ class TSN_Amd(nn.Module):
                 self.block_pred_rnn_fc_dict = nn.ModuleDict()
             elif self.args.use_distil_loss_to_cnn:
                 self.block_pred_cnn_fc_dict = nn.ModuleDict()
+            
+            if self.args.use_early_exit:
+                self.early_exit_dict = nn.ModuleDict()
                 
             if self.args.voting_policy:
                 self.vote_fc_dict = nn.ModuleDict()
@@ -144,7 +147,7 @@ class TSN_Amd(nn.Module):
                     make_a_linear(feat_dim, feat_dim)
                 )
             if self.args.voting_policy:
-                self.vote_fc_dict[name] =  make_a_linear(self.args.hidden_dim, self.vote_dim)
+                self.vote_fc_dict[name] =  make_a_linear(self.args.hidden_dim, 1)
                 
             if self.args.use_local_policy_module:
                 self.local_policy_dict[name] = torch.nn.Sequential(
@@ -154,13 +157,13 @@ class TSN_Amd(nn.Module):
                     torch.nn.ReLU(),
                     make_a_linear(feat_dim, self.amd_action_dim)    
                 )
+            if self.args.use_early_exit:
+                self.early_exit_dict[name] = make_a_linear(self.args.hidden_dim, 1)
                 
                 
 
         
         lstm_feat_dim = 2048   #getattr(self.base_model, 'fc').in_features
-        if self.args.diff_to_rnn:
-            feat_dim = feat_dim//2
         if self.args.amd_consensus_type == "lstm":
             self.last_rnn = torch.nn.LSTMCell(input_size=feat_dim, hidden_size=lstm_feat_dim)
             self.new_fc = make_a_linear(feat_dim, self.num_class)
@@ -172,6 +175,7 @@ class TSN_Amd(nn.Module):
         
         else:
             self.new_fc = make_a_linear(feat_dim, self.num_class)
+            
 
     
     def _prepare_pos_encoding(self):
@@ -364,214 +368,82 @@ class TSN_Amd(nn.Module):
 
         return self.block_cnn_backbone(name, input_data, self.block_cnn_dict[name]) 
                     
-    def gate_fc_rnn_block(self, name, input_data, candidate_list, tau, voter_stack = None):
+    def gate_fc_rnn_block_full(self, input_data_dict, tau):
         
-        r_list = []
-        voter_list = []
+        all_r_list = []
         hx_list = []
         raw_r_list = []
-        redundant_r_list = []
-        noisy_r_list = []
-        similarity_list = []
+
         
         sup_return = None
         sup2_return = None
-        if name in self.block_rnn_dict.keys(): # gate activate = policy on 
-            base_out = self.block_fc_backbone(name, input_data, self.block_fc_dict[name])
-            if self.args.pe_at_rnn:
-                base_out = self.pos_encoding_dict[name](base_out)
-            
-            old_hx = None
-            old_cx = None
-            batch_size = base_out.shape[0]
-            hx = init_hidden(batch_size, self.args.hidden_dim)
-            cx = init_hidden(batch_size, self.args.hidden_dim)
-            
-            store_recent_pass_out = torch.zeros(batch_size, base_out.shape[-1], dtype=torch.long).cuda() 
-            store_recent_pass = torch.zeros(batch_size, 1, dtype=torch.long).cuda()
-            
-            
-            
-            _bt, _c, _h, _w = input_data.shape
-            _b, _t = _bt // self.time_steps, self.time_steps
-            _input_data = input_data.view(_b,_t,_c,_h,_w) 
-            _prev_input_data_t = torch.zeros(_b, _c, _h, _w, dtype=torch.float).cuda()
-            
-            for t in range(self.time_steps):
-                old_r_t = candidate_list[:, t, :].cuda() #B, K
-                _input_data_t = _input_data[:, t, :, : , :]
-                if t !=0 and self.args.skip_twice:
-                    take_bool =  r_t[:,1].unsqueeze(-1) > 0.5 #skip twice
-                    take_old_r = torch.tensor(~take_bool, dtype=torch.float).cuda()
-                    old_r_t = old_r_t * take_old_r 
-                    
-
-                if self.args.frame_independent:
-                    feat_t = base_out[:, t]
-                else:
-                    rnn_input = base_out[:, t]
-                    if self.args.diff_to_rnn:
-                        input_feat_t = base_out[:, t]
-#                         recent_base_out = torch.cat([base_out[b_i, store_recent_pass[b_i][-1]].unsqueeze(0) for b_i in range(batch_size)], dim=0)
-                        rnn_input = torch.cat((input_feat_t, (input_feat_t - store_recent_pass_out)), dim = 1)
-                    
-                    if self.args.diff_to_policy:
-                        cossim = torch.nn.CosineSimilarity(dim=1, eps=1e-6)
-                        relu = torch.nn.ReLU()
-                        
-                        cossim_outs = cossim(rnn_input, store_recent_pass_out).unsqueeze(-1)
-                        skip_action_outs = relu(cossim_outs)
-                        pass_action_outs = 1 - skip_action_outs
-                        diff_action_outs = skip_action_outs * torch.cat((skip_action_outs, pass_action_outs), dim=1)
-                        
-
-                        hx, cx = self.block_rnn_dict[name](rnn_input, (hx, cx))
-                        feat_t = hx
-                        p_t = torch.log(F.softmax(self.action_fc_dict[name](feat_t)+diff_action_outs, dim=1).clamp(min=1e-8))
-                        r_t = torch.cat(
-                            [F.gumbel_softmax(p_t[b_i:b_i + 1], tau, True) for b_i in range(p_t.shape[0])])
-                    
-                    elif self.args.strong_skip_sim:
-                        cossim = torch.nn.CosineSimilarity(dim=1, eps=1e-6)
-                        relu = torch.nn.ReLU()
-                    
-                        cossim_outs = cossim(rnn_input, store_recent_pass_out).unsqueeze(-1)
-                        skip_action_outs = relu(cossim_outs)
-                        
-                        action_out_bool = skip_action_outs > 0.98 
-                        hard_skip_action = torch.tensor(action_out_bool, dtype=torch.float).cuda()
-                        depend_policy_action = torch.tensor(~action_out_bool, dtype=torch.float).cuda()
-                        
-                        hx, cx = self.block_rnn_dict[name](rnn_input, (hx, cx))
-                        feat_t = hx
-                        p_t = torch.log(F.softmax(self.action_fc_dict[name](feat_t), dim=1).clamp(min=1e-8))
-                        r_t = torch.cat(
-                            [F.gumbel_softmax(p_t[b_i:b_i + 1], tau, True) for b_i in range(p_t.shape[0])])
-                    
-                        skip_r_t = torch.cat([torch.ones(p_t.shape[0]).unsqueeze(-1), torch.zeros(p_t.shape[0]).unsqueeze(-1)], dim=1).cuda() 
-                        
-                        r_t = hard_skip_action * skip_r_t + depend_policy_action * r_t
-                                                
-                    elif self.args.use_local_policy_module: 
-                        cossim = torch.nn.CosineSimilarity(dim=1, eps=1e-6)
-                        avgpool = torch.nn.AdaptiveAvgPool2d(output_size=(1, 1))
-                        _prev_input_out = avgpool(_prev_input_data_t).squeeze(-1)#B, C, 1
-                        _input_out = avgpool(_input_data_t).squeeze(-1) #B, C, 1
-                        
-                        similarity_list.append(cossim(_prev_input_out,_input_out)) #B
-
-                        local_compare_input = torch.cat((_prev_input_data_t, _input_data_t, (_input_data_t - _prev_input_data_t)), dim = 1)
-                        redundant_r = F.softmax(self.local_policy_dict[name](local_compare_input), dim=1).clamp(min=1e-8)
-                        
-                        hx, cx = self.block_rnn_dict[name](rnn_input, (hx, cx))
-                        feat_t = hx
-                        noisy_r = F.softmax(self.action_fc_dict[name](feat_t), dim=1).clamp(min=1e-8)
-                        
-                        p_r_t = torch.log(redundant_r)
-                        redundant_r_t = torch.cat(
-                            [F.gumbel_softmax(p_r_t[b_i:b_i + 1], tau, True) for b_i in range(p_r_t.shape[0])])
-                        
-                        p_n_t = torch.log(noisy_r)
-                        noisy_r_t = torch.cat(
-                            [F.gumbel_softmax(p_n_t[b_i:b_i + 1], tau, True) for b_i in range(p_n_t.shape[0])])
-                        
-                        r_t = redundant_r_t*noisy_r_t
-                        #p_t = torch.log(redundant_r * noisy_r) #B,2 * B,2
-                        #r_t = torch.cat([F.gumbel_softmax(p_t[b_i:b_i + 1], tau, True) for b_i in range(p_t.shape[0])])
-                        redundant_r_list.append(redundant_r_t)
-                        noisy_r_list.append(noisy_r_t)
-                        
-                        _prev_input_data_t = _input_data_t
-
-
-                    else:
-                        hx, cx = self.block_rnn_dict[name](rnn_input, (hx, cx))
-                        feat_t = hx
-                        p_t = torch.log(F.softmax(self.action_fc_dict[name](feat_t), dim=1).clamp(min=1e-8))
-                        r_t = torch.cat(
-                            [F.gumbel_softmax(p_t[b_i:b_i + 1], tau, True) for b_i in range(p_t.shape[0])])
-                        
-                       
-                    
-#                     if self.args.voting_policy:
-#                         passed_in_prev_stage = old_r_t > 0.5
-#                         passed_in_this_stage = r_t[:, 1].unsqueeze(-1).cuda() > 0.5
-#                         passed_in_prev_stage = torch.tensor(~passed_in_prev_stage, dtype=torch.float).cuda() #trick pass ->0
-#                         failed_in_this_stage = torch.tensor(passed_in_this_stage, dtype=torch.float).cuda() #fail -> 0
-                        
-#                         voter = (passed_in_prev_stage + failed_in_this_stage) >0.5 # prev pass :0 + curr skip:0 -> 0 ~ -> 1(voter)
-#                         voter = torch.tensor(~voter, dtype=torch.float).cuda()
-                        
-#                         v_t = voter * feat_t
-#                         p_v_t = torch.log(F.softmax(self.vote_fc_dict[name](v_t), dim=1).clamp(min=1e-8))
-#                         r_v_t = torch.cat([F.gumbel_softmax(p_v_t[b_i:b_i + 1], tau, True) for b_i in range(p_t.shape[0])])
-                        
-#                         voting_result = r_v_t[:,1].unsqueeze(-1)
-#                         voter_list.append(voter * voting_result)
-                        
-                    if self.args.use_conf_btw_blocks or self.args.use_local_policy_module:
-                        raw_r_list.append(r_t)
-                    
-                    
-#                     take_old = old_r_t[:,-2].unsqueeze(-1)
-#                     take_curr = old_r_t[:,-1].unsqueeze(-1)
-                    take_bool =  old_r_t[:,-1].unsqueeze(-1) > 0.5
-                    take_old_ = torch.tensor(~take_bool, dtype=torch.float).cuda()
-                    take_curr_ = torch.tensor(take_bool, dtype=torch.float).cuda()
-                    r_t = old_r_t * take_old_ + r_t * take_curr_
-                    r_list.append(r_t)  
-                                                      
-                    if old_hx is not None:
-                        hx = old_hx * take_old_ + hx * take_curr_
-#                         take_now_bool = r_t[:,-1].unsqueeze(-1) > 0.5
-
-#                         take_hx_bool = take_bool * take_now_bool #STOP/PASS before. * STOP/PASS now.
-#                         take_hx_old = torch.tensor(~take_hx_bool, dtype=torch.float).cuda()
-#                         take_hx_curr = torch.tensor(take_hx_bool, dtype=torch.float).cuda()
-#                         hx = old_hx * take_hx_old + hx * take_hx_curr
-#                         cx = old_cx * take_hx_old + cx * take_hx_curr
-
-                    if self.args.diff_to_rnn:
-                            store_recent_pass_out = store_recent_pass_out * take_hx_old + input_feat_t * take_hx_curr
-                    
-                    hx_list.append(hx)
-                    old_hx = hx
-                    old_cx = cx
-            #check all skip case
-#             r_list = torch.stack(r_list, dim=1)
-#             _check_empty_candidate = r_list.sum(dim=1)
-#             take_bool_r = _check_empty_candidate[:,1] > 0.5
-#             take_bool_r = take_bool_r.unsqueeze(-1).repeat(1,2)
-#             take_old_r  = torch.tensor(~take_bool_r, dtype=torch.float).cuda()
-#             take_curr_r = torch.tensor(take_bool_r, dtype=torch.float).cuda()
-            
-#             take_old_r = take_old_r.unsqueeze(1).expand(-1,16,-1)
-#             take_curr_r = take_curr_r.unsqueeze(1).expand(-1,16,-1)
-#             r_list = take_old_r * candidate_list.cuda() + take_curr_r * r_list
-
-            r_list = torch.stack(r_list, dim=1)
-
-            
-            if self.args.use_distil_loss_to_rnn:
-                sup_return = torch.stack(hx_list, dim=1)
-            elif self.args.use_distil_loss_to_cnn:
-                sup_return = base_out
-            elif self.args.use_conf_btw_blocks or self.args.use_local_policy_module:
-                sup_return = torch.stack(hx_list, dim=1)
-                sup2_return = torch.stack(raw_r_list, dim=1)
-               
-            if self.args.voting_policy:
-                sup_return = voter_stack + torch.stack(voter_list, dim=1)
+        # input_data = input_data.detach()
+        base_out_dict = {}
+        for name in self.block_rnn_dict:
+            input_data = input_data_dict[name]
+            base_out_dict[name] = self.block_fc_backbone(name, input_data, self.block_fc_dict[name])
+        batch_size = base_out_dict[name].shape[0]
         
-            if self.args.use_local_policy_module:
-                redundant_t = torch.stack(redundant_r_list, dim=1) #B, T, 2
-                noisy_t     = torch.stack(noisy_r_list, dim=1) #B, T, 2
-                dual_r_list = torch.cat((redundant_t.unsqueeze(-2), noisy_t.unsqueeze(-2)), dim = -2) #B, T, 2', 2
+        hx_l_t = init_hidden(batch_size, self.args.hidden_dim).unsqueeze(1).repeat(1, len(self.block_rnn_dict.keys()), 1) 
+        cx_l_t = init_hidden(batch_size, self.args.hidden_dim).unsqueeze(1).repeat(1, len(self.block_rnn_dict.keys()), 1)
+        num_of_policy = len(self.block_rnn_dict.keys())
+        per_time_r_list = []
+        
+        raw_hx_list = []
+        exit_r_list = []
+        for t in range(self.time_steps):
+            old_r_t = torch.cat([torch.zeros(batch_size, 1), torch.ones(batch_size, 1)], 1).cuda()
+            local_hx_list = []
+            local_cx_list = []
+            per_time_r_list.append(old_r_t)
+            for i, name in enumerate(self.block_rnn_dict.keys()):
+                _bt, _c, _h, _w = input_data_dict[name].shape
+                _b, _t = _bt // self.time_steps, self.time_steps
+
+                rnn_input = base_out_dict[name][:, t]
+                hx = hx_l_t[:,i]
+                cx = cx_l_t[:,i]
                 
-                similarity_list = torch.stack(similarity_list, dim=1) #B, T, 1
+                hx, cx = self.block_rnn_dict[name](rnn_input, (hx, cx))
+                feat_t = hx
+                p_t = torch.log(F.softmax(self.action_fc_dict[name](feat_t), dim=1).clamp(min=1e-8))
+                r_t = torch.cat(
+                    [F.gumbel_softmax(p_t[b_i:b_i + 1], tau, True) for b_i in range(p_t.shape[0])])
+
+                if self.args.use_conf_btw_blocks or self.args.use_local_policy_module:
+                    raw_r_list.append(r_t)
+                    raw_hx_list.append(hx)
+                    
+                if self.args.use_early_exit:
+                    exit_r = F.sigmoid(self.early_exit_dict[name](feat_t)).clamp(min=1e-8)
+                    exit_r_list.append(exit_r)
+
+                take_bool =  old_r_t[:,-1].unsqueeze(-1) > 0.5
+                take_old_ = old_r_t[:,-2].unsqueeze(-1)
+                take_curr_ = old_r_t[:,-1].unsqueeze(-1)
+                take_old = torch.tensor(~take_bool, dtype=torch.float).cuda()
+                take_curr = torch.tensor(take_bool, dtype=torch.float).cuda()
+                r_t = old_r_t * take_old + r_t * take_curr
+                old_r_t = r_t
                 
-                return r_list, sup_return, sup2_return, dual_r_list, similarity_list
-        return r_list, sup_return, sup2_return
+                per_time_r_list.append(r_t)  
+                local_hx_list.append(hx)
+                local_cx_list.append(cx)
+                
+            hx_l_t = take_old.unsqueeze(-1) * hx_l_t + take_curr.unsqueeze(-1) * torch.stack(local_hx_list, dim=1)
+            cx_l_t = take_old.unsqueeze(-1) * cx_l_t + take_curr.unsqueeze(-1) * torch.stack(local_cx_list, dim=1)
+            
+        r_list = torch.stack(per_time_r_list, dim=1).view(_b, _t, num_of_policy+1, -1) #TK * (B, 2) -> B,T*K,2 -> B, T, K, 2                                                               
+                                                                                    
+        if self.args.use_conf_btw_blocks or self.args.use_local_policy_module:
+            sup_return = torch.stack(raw_hx_list, dim=1).view(_b, _t, num_of_policy, -1) #TK*(B,feat) -> B,T*K,feat -> B, T, K, feat
+            sup2_return = torch.stack(raw_r_list, dim=1).view(_b, _t, num_of_policy, -1) #TK*(B,2) -> B,T*K,2 -> B, T, K, 2
+        
+        if self.args.use_early_exit:
+            exit_r_t = torch.stack(exit_r_list, dim=0).view(_b, _t, num_of_policy)
+            return r_list, sup_return, sup2_return, exit_r_t
+               
+        return r_list, sup_return, sup2_return, None
 
     
     
@@ -671,7 +543,6 @@ class TSN_Amd(nn.Module):
 #             _input = torch.flip(_input, [1])
 #             _input = _input.view(_b, _tc, _h, _w)
 
-        candidate_list = torch.zeros(batch_size, self.time_steps, 1)
         if self.args.skip_twice:
             candidate_list = torch.cat([torch.zeros(batch_size, self.time_steps, 1), torch.zeros(batch_size, self.time_steps, 1), torch.ones(batch_size, self.time_steps, 1)], 2) #B, T, A
         else:
@@ -693,158 +564,99 @@ class TSN_Amd(nn.Module):
         if "tau" not in kwargs:
             kwargs["tau"] = None
         tau = kwargs["tau"]
-        voter_list = None
+        feat_dict = {}
         for name in self.block_cnn_dict.keys():
             # input image tensor with 224 size
-            _input = self.pass_cnn_block(name, _input) 
-
-#             if name is not 'base' and name in self.block_rnn_list:
-            if name in self.block_rnn_list:
-                if self.args.voting_policy:
-                    voter_list = torch.zeros(batch_size, self.time_steps, 1, dtype=torch.float).cuda() #B, T, 1
-                    _candidate_list, voter_list, _ = self.gate_fc_rnn_block(name, _input, candidate_list, tau, voter_list)
-
-                # update candidate_list based on policy rnn
-                elif self.args.use_local_policy_module:
-                    _candidate_list, hx_list, raw_r_list, raw_dual_r_list, similarity_list= self.gate_fc_rnn_block(name, _input, candidate_list, tau, None)
-
-                    all_dual_policy_result_list.append(raw_dual_r_list)
-                    all_similarity_list.append(similarity_list)
-                else :
-                    _candidate_list, hx_list, raw_r_list = self.gate_fc_rnn_block(name, _input, candidate_list, tau, None)
-
-                if self.args.use_distil_loss_to_rnn :
-                    skip_new_list = (candidate_list[:,:,-1] - _candidate_list[:,:,-1]).cuda()
-                    skip_result_list.append(skip_new_list)
-                    block_out_list.append(self.pass_pred_block(name, hx_list))
-
-                elif self.args.use_distil_loss_to_cnn:
-                    base_out = hx_list
-                    block_out_list.append(self.block_fc_backbone(name, base_out, self.block_pred_cnn_fc_dict[name]))
-
-                elif self.args.use_conf_btw_blocks:
-                    block_out_list.append(self.pass_pred_block(name, hx_list))
-
-                candidate_list = _candidate_list
-
-#                 take_bool = candidate_list[:,:,1] > 0.5
-#                 candidate_log_list.append(torch.tensor(take_bool, dtype=torch.float).cuda())
-
-                candidate_log_list.append(candidate_list[:,:,-1])
-                if self.args.skip_twice:
-                    all_policy_result_list.append(candidate_list)
-                elif self.args.use_conf_btw_blocks or self.args.use_local_policy_module:
-                    all_policy_result_list.append(raw_r_list)
-
+            _input = self.pass_cnn_block(name, _input)
+            feat_dict[name] = _input
+        
+        #B,T,K,2/  B,T,K,feat/ B,T,K,2
+        r_l_t, hx_l_t, all_policy_result_l_t, exit_r_t = self.gate_fc_rnn_block_full(feat_dict, tau) 
+        
+        if self.args.use_conf_btw_blocks:
+            for i, name in enumerate(self.block_rnn_list):
+                block_out_list.append(self.pass_pred_block(name, hx_l_t[:,:,i,:]))
         
             
         return_supp = None
         if self.args.amd_consensus_type == "avg":
-            if self.args.use_distil_loss_to_rnn or self.args.use_distil_loss_to_cnn:
-                skip_result_list.append(candidate_list[:,:,-1].cuda()) 
-                skip_r_l = torch.stack(skip_result_list, dim=2) # (B,T) -> B,T,K 
-                
-                block_out = self.pass_last_fc_block('new_fc', _input)
+            last_feat = feat_dict[list(self.block_cnn_dict.keys())[-1]]
+            if self.args.use_conf_btw_blocks:
+                block_out = self.pass_last_fc_block('new_fc', last_feat)
                 block_out_list.append(block_out)
-                block_r_l = torch.stack(block_out_list, dim=2) # (B,T,#class) -> (B,T,K,#class)
-                
-                output = self.amd_distil_combine_logits(skip_r_l, block_r_l)
-            elif self.args.use_conf_btw_blocks:
-                block_out = self.pass_last_fc_block('new_fc', _input)
-                block_out_list.append(block_out)
-                output = self.amd_combine_logits(candidate_list[:,:,-1], block_out, voter_list)
 
             else:
-                block_out = self.pass_last_fc_block('new_fc', _input)
-                output = self.amd_combine_logits(candidate_list[:,:,-1], block_out, voter_list)
-                
-            if self.args.use_early_stop:
-                e_p_t = torch.log(F.softmax(self.early_stop_decision_block(block_out), dim=2).clamp(min=1e-8))
-                e_r_t = torch.cat(
-                    [F.gumbel_softmax(e_p_t[b_i:b_i + 1, t_i:t_i+1], tau, True) for b_i in range(e_p_t.shape[0]) for t_i in range(self.time_steps)]) #B*T, 2(kill/pass)
-                
-                e_r_t = e_r_t.view(e_p_t.shape[0], e_p_t.shape[1], -1) # B,T,2
-                selected_bool = candidate_list[:,:,-1].unsqueeze(-1) > 0.5
-                choose_selected_es = e_r_t * torch.tensor(selected_bool, dtype=torch.float).cuda()
-    
-                if not self.training:
-                    modify_candidate_list = []
-                    for b_i in range(batch_size):
-                        max_i = 16
-                        for t_i in range(self.time_steps):
-                            if choose_selected_es[b_i,t_i,0] == 1:
+                block_out = self.pass_last_fc_block('new_fc', last_feat)
+            
+            if self.args.use_early_stop_inf and not self.training :
+                modify_candidate_list = []
+                selected_bool = r_l_t[:,:,-1,-1].unsqueeze(-1) > 0.5 #B, T
+                selected_block_outs = block_out * torch.tensor(selected_bool, dtype=torch.float).cuda()
+                num_class = block_out.shape[-1]
+
+#                     output_idxs = output.squeeze(1).max(dim=1)[1].cpu().numpy()
+                early_stop_thr = 0.99
+                for b_i in range(batch_size):
+                    max_i = self.time_steps
+                    early_stop_limit = 7
+                    avg_block_out = 0
+                    selected_frame_cnt = torch.tensor(0.0, dtype=torch.float)
+                    output_class_dict = {}
+                    output_val = 0.0
+                    boundary_start = False
+                    for t_i in range(self.time_steps):
+                        avg_block_out += selected_block_outs[b_i, t_i, :]
+                        is_selected = r_l_t[b_i,t_i,-1,-1] > 0.5
+                        if is_selected: 
+                            selected_frame_cnt +=1
+                            output_base_out = F.softmax(avg_block_out/selected_frame_cnt, dim=-1)
+#                             output_base_out = avg_block_out/selected_frame_cnt
+
+                            candidate_output_class = output_base_out.max(dim=0)[1].cpu().item()
+                            candidate_output_val = output_base_out.max(dim=0)[0].cpu()
+#                             candidate_output_val_indi = output_base_out.max(dim=0)[0].cpu()
+#                             if candidate_output_val > early_stop_thr:
+#                                 boundary_start = True
+
+
+                            if candidate_output_val > early_stop_thr:
+                                if candidate_output_class in output_class_dict:
+                                    output_class_dict[candidate_output_class] -= 1
+                                    if output_class_dict[candidate_output_class] is 0:
+                                        max_i = (t_i+1)
+                                        break                                    
+                                else:
+                                    output_class_dict[candidate_output_class] = early_stop_limit-1
+                        else:
+                            if boundary_start:
                                 max_i = (t_i+1)
                                 break
 
-                        stage_cnt= len(candidate_log_list)
-                        modify_candidate_list.append(torch.cat((torch.ones(max_i, stage_cnt), torch.zeros(self.time_steps-max_i, stage_cnt)), dim=0).cuda()) #T,K
-                    
-                    modify_candidate_l_t = torch.stack(modify_candidate_list, dim=0) # B, T, K
-                    candidate_log_list = modify_candidate_l_t * torch.stack(candidate_log_list, dim=2)
-                    output = self.amd_combine_logits(candidate_log_list[:,:,-1], block_out, voter_list)
-                else:
-                    candidate_log_list = torch.stack(candidate_log_list, dim=2)
-                return_supp = choose_selected_es
+                    stage_cnt= r_l_t.shape[2]
+                    modify_candidate_list.append(torch.cat((torch.ones(max_i, stage_cnt), torch.zeros(self.time_steps-max_i, stage_cnt)), dim=0).cuda()) #B * K,1
 
-            else:
-                if not self.training:
-                    if self.args.use_early_stop_inf:
-                        modify_candidate_list = []
-                        selected_bool = candidate_list[:,:,-1].unsqueeze(-1) > 0.5 #B, T
-                        selected_block_outs = block_out * torch.tensor(selected_bool, dtype=torch.float).cuda()
-                        num_class = block_out.shape[-1]                            
-                            
-                        early_stop_thr = 0.99
-                        for b_i in range(batch_size):
-                            max_i = self.time_steps
-                            early_stop_limit = 2
-                            avg_block_out = 0
-                            selected_frame_cnt = 0.0
-                            output_class_dict = {}
-                            output_val = 0.0
-                            boundary_start = False
-                            for t_i in range(self.time_steps):
-                                avg_block_out += selected_block_outs[b_i, t_i, :]
-                                is_selected = candidate_list[b_i,t_i,-1] > 0.5
-                                if is_selected: 
-                                    selected_frame_cnt +=1
-                                    output_base_out = F.softmax(avg_block_out/selected_frame_cnt, dim=-1)
-                                    candidate_output_class = output_base_out.max(dim=0)[1].cpu().item()
-                                    candidate_output_val = output_base_out.max(dim=0)[0].cpu()
-                                    output_base_out_indi = F.softmax(selected_block_outs[b_i, t_i, :], dim=-1)
-                                    candidate_output_val_indi = output_base_out_indi.max(dim=0)[0].cpu()
-                                    if candidate_output_val > early_stop_thr:
-                                        boundary_start = True
-                                    if candidate_output_val > early_stop_thr:
-                                        if candidate_output_class in output_class_dict:
-                                            output_class_dict[candidate_output_class] -= 1
-                                            if output_class_dict[candidate_output_class] is 0:
-                                                max_i = (t_i+1)
-                                                break                                    
-                                        else:
-                                            output_class_dict[candidate_output_class] = early_stop_limit-1
-                                else:
-                                    if boundary_start:
-                                        max_i = (t_i+1)
-                                        break
-                                        
-                            stage_cnt= len(candidate_log_list)
-                            modify_candidate_list.append(torch.cat((torch.ones(max_i, stage_cnt), torch.zeros(self.time_steps-max_i, stage_cnt)), dim=0).cuda()) #T,K
-                    
-                        modify_candidate_l_t = torch.stack(modify_candidate_list, dim=0) # B, T, K
-                        candidate_log_list = modify_candidate_l_t * torch.stack(candidate_log_list, dim=2)
-                        output = self.amd_combine_logits(candidate_log_list[:,:,-1], block_out, voter_list)
-                    else:
-                        candidate_log_list = torch.stack(candidate_log_list, dim=2)
+                modify_candidate_l_t = torch.stack(modify_candidate_list, dim=0) # B, T, K
+                r_l_t = modify_candidate_l_t.unsqueeze(-1) * r_l_t
                 
-                else:
-                    candidate_log_list = torch.stack(candidate_log_list, dim=2)
-
-                return_supp = block_out
+            
+#             if self.args.use_early_exit_inf and not self.training :
+#                 exit_flag_bool = exit_r_t > 0.7
+#                 exit_flag_t = torch.tensor(exit_flag_bool, dtype=torch.float).cuda()
+#                 skipped_layer_bool = r_l_t[:,:,:,-1] < 0.5
+#                 skip_flag_t = torch.tensor(skipped_layer_bool, dtype=torch.float).cuda()
+#                 terminate_flag_t = exit_flag_t * skip_flag_t
+                
+#                 for b_i in range(batch_size):
+#                     for t_i in range(self.time_steps):
+                        
+                
+                
+            output = self.amd_combine_logits(r_l_t[:,:,-1,-1], block_out)
+            return_supp = block_out
             
             
         elif self.args.amd_consensus_type == "random_avg":
-            block_out = self.pass_last_fc_block('new_fc', _input)
+            block_out = self.pass_last_fc_block('new_fc', feat_dict[list(self.block_cnn_dict.keys())[-1]])
             
             r_all = torch.zeros(batch_size, self.time_steps, self.amd_action_dim).cuda()
             for i_bs in range(batch_size):
@@ -852,28 +664,21 @@ class TSN_Amd(nn.Module):
                     rand = 1 if torch.randint(100, [1]) < self.args.random_ratio else 0
                     r_all[i_bs, i_t, rand] = 1.0
             
-            output = self.amd_combine_logits(r_all[:,:,-1], block_out, voter_list)
-            candidate_log_list = r_all[:,:,-1].unsqueeze(-1).expand(-1,-1,5)
+            output = self.amd_combine_logits(r_all[:,:,-1], block_out)
+            candidate_log_list = r_all[:,:,-1].unsqueeze(-1).expand(-1,-1,6)
+            return output.squeeze(1), candidate_log_list, None, None, block_out
         
         elif self.args.amd_consensus_type == "lstm":
             block_out = None
-            output = self.pass_last_rnn_block('new_fc', _input, candidate_list)
-             
-#         elif self.args.amd_consensus_type is 'attention':
-#             _att_input = _input[:, t] * candidate_list[:,t,-1].unsqueeze(-1)
-#             attention = ScaledDotProductAttention(temperature=64 ** 0.5)
-        if self.args.skip_twice:
-            return output.squeeze(1), candidate_log_list, torch.stack(all_policy_result_list, dim=2), torch.stack(block_out_list, dim=2), block_out
+            output = self.pass_last_rnn_block('new_fc', feat_dict[list(self.block_cnn_dict.keys())[-1]], r_l_t[:,:,-1,-1])
+        
         if self.args.use_conf_btw_blocks or self.args.use_early_stop :
-            return output.squeeze(1), candidate_log_list, torch.stack(all_policy_result_list, dim=2), torch.stack(block_out_list, dim=2), return_supp
-        if self.args.use_local_policy_module:
-            return output.squeeze(1), candidate_log_list, torch.stack(all_policy_result_list, dim=2), block_out, torch.stack(all_dual_policy_result_list, dim=2), torch.stack(all_similarity_list, dim=2)
-       
+            return output.squeeze(1), r_l_t[:,:,:,-1], all_policy_result_l_t, torch.stack(block_out_list, dim=2), return_supp, exit_r_t
         else:
-            return output.squeeze(1), candidate_log_list, None, None, block_out
+            return output.squeeze(1), r_l_t[:,:,:,-1], None, None, block_out, exit_r_t
             
     def amd_distil_combine_logits(self, r_l, base_out_l):
-        # r_l        B, T, K, 
+        # r_l        B, T, A, 
         # base_out   B, T, K, #class
         
         batch_size = base_out_l.shape[0]
@@ -882,7 +687,7 @@ class TSN_Amd(nn.Module):
         t_tensor = torch.sum(r_l, dim=[1, 2]).unsqueeze(-1).clamp(1)  # TODO sum T, K to count frame
         return (pred_tensor * r_tensor).sum(dim=[1, 2]) / t_tensor
 
-    def amd_combine_logits(self, r, base_out, voter):
+    def amd_combine_logits(self, r, base_out):
         # TODO r         N, T 
         # TODO base_out  N, T, C
         
@@ -891,18 +696,7 @@ class TSN_Amd(nn.Module):
         pred_tensor = base_out
         r_tensor = r.unsqueeze(-1)
         t_tensor = torch.sum(r, dim=[1]).unsqueeze(-1).clamp(1)  # TODO sum T, K to count frame
-        
-        if self.args.voting_policy:
-            hold_idx = 0
-            for b_i in range(batch_size):
-                for t_i in range(self.time_steps):
-                    if r_tensor[b_i, t_i, -1] is 1:
-                        hold_idx = t_i
-                    if voter[b_i, t_i, :] is 1:
-                        r_tensor[b_i, hold_idx, -1] += 1.0
-            
-            
-            t_tensor = t_tensor + torch.sum(voter, dim=[1]).unsqueeze(-1).clamp(1)
+       
         return (pred_tensor * r_tensor).sum(dim=[1]) / t_tensor
 
         
