@@ -237,7 +237,10 @@ def main():
     policies = model.get_optim_policies()
     train_augmentation = model.get_augmentation(
         flip=False if 'something' in args.dataset or 'jester' in args.dataset else True)
-
+    
+    model.eval()
+    model.early_exit_dict['conv_5'].train()
+#     pdb.set_trace()
     model = torch.nn.DataParallel(model, device_ids=args.gpus).cuda()
     
     # TODO(yue) freeze some params in the policy + lstm layers
@@ -1023,9 +1026,10 @@ def early_exit_criterion_loss(criterion, exit_r_t, r, feat_outs, target):
         
     batch_size = r.shape[0]
     time_steps = r.shape[1]
-    
     psuedo_gt_list = []
     
+    total_cnt = 0
+    total_exit_loss = 0.0
     for b_i in range(batch_size):
         local_avg_list = []
         local_output = torch.zeros(feat_outs.shape[-1], dtype=torch.float).cuda()
@@ -1034,23 +1038,84 @@ def early_exit_criterion_loss(criterion, exit_r_t, r, feat_outs, target):
         for t_i in range(time_steps):
             if selected[b_i,t_i] > 0.5:
                 local_selected_cnt +=1
+                total_cnt +=1
                 local_output += feat_outs[b_i,t_i,-1,:]
              
-            if local_selected_cnt == 0:
-                loss = criterion(local_output.unsqueeze(0), target[b_i, 0].unsqueeze(0))
-            else :
+ #             if local_selected_cnt == 0:
+#                 loss = criterion(local_output.unsqueeze(0), target[b_i, 0].unsqueeze(0))
+#             else :
                 loss = criterion((local_output/local_selected_cnt).unsqueeze(0), target[b_i, 0].unsqueeze(0))
             
-            loss_bool = loss < 1e-3
-            loss_bool_l_t = torch.tensor(loss_bool, dtype=torch.float).cuda()
-            psuedo_gt_list.append(loss_bool_l_t)
+#             pdb.set_trace()
+                loss_bool = loss < 1e-1
+                loss_bool_l_t = torch.tensor(loss_bool, dtype=torch.float).cuda()
+                total_exit_loss += BCE(exit_r_t[b_i,t_i], loss_bool_l_t.unsqueeze(-1).repeat(1,1,r.shape[2]-1))        
+#                 psuedo_gt_list.append(loss_bool_l_t)
+                
+#         psuedo_gt_l_t = torch.stack(psuedo_gt_list, dim=0).cuda() #T
+#         psuedo_gt_l_t = psuedo_gt_l_t.unsqueeze(-1)
+#         total_exit_loss = BCE(exit_r_t[b_i,:,-1], psuedo_gt_l_t)
+        
+
 
     
-    psuedo_gt_l_t = torch.stack(psuedo_gt_list, dim=0).reshape(batch_size, time_steps).cuda() #B, T
-    psuedo_gt_l_t = psuedo_gt_l_t.unsqueeze(-1).repeat(1,1,r.shape[2]-1) #B,T,K
-    total_exit_loss = BCE(exit_r_t, psuedo_gt_l_t)
+#     psuedo_gt_l_t = torch.stack(psuedo_gt_list, dim=0).reshape(batch_size, time_steps).cuda() #B, T
+#     psuedo_gt_l_t = psuedo_gt_l_t.unsqueeze(-1).repeat(1,1,r.shape[2]-1) #B,T,K
+#     psuedo_gt_l_t = psuedo_gt_l_t.unsqueeze(-1) #B,T,1
+
+#     total_exit_loss = BCE(exit_r_t[:,:,-1], psuedo_gt_l_t)
     
-    return total_exit_loss
+#     return total_exit_loss
+    return total_exit_loss/total_cnt
+
+def early_exit_future_criterion_loss(criterion, exit_r_t, r, feat_outs, target):
+    #exit_r_t : B, T, K
+    #r : B, T, K 
+    #feat_out : B,T,(K-1)+1, #class
+    BCE = torch.nn.BCELoss().cuda()
+    
+    selected = r[:,:,-1]#B,T
+        
+    batch_size = r.shape[0]
+    time_steps = r.shape[1]
+    psuedo_gt_list = []
+    
+    loss_b_l = []
+    total_cnt = 0
+    total_exit_loss = 0.0
+    for b_i in range(batch_size):
+        local_avg_list = []
+        local_output = torch.zeros(feat_outs.shape[-1], dtype=torch.float).cuda()
+        local_selected_cnt = 0.0
+        psuedo_gt = 0
+        local_feat_out = F.softmax((selected[b_i].unsqueeze(-1) * feat_outs[b_i, :, -1, :]).sum(dim=0) /max(selected[b_i].sum(), 1))
+        total_target_class = torch.argmax(local_feat_out)
+        total_target_val = local_feat_out[total_target_class]
+        
+        for t_i in range(time_steps):
+            if selected[b_i,t_i] > 0.5:
+                local_selected_cnt +=1
+                total_cnt +=1
+                local_output += feat_outs[b_i,t_i,-1,:]
+                 
+                temp_feat_out = F.softmax(local_output/local_selected_cnt)
+                target_class = torch.argmax(temp_feat_out)
+                target_val = temp_feat_out[target_class]
+                
+                loss_bool = target_class == total_target_class
+                loss_bool_l_t = torch.tensor(loss_bool, dtype=torch.float).cuda()
+                
+                loss_diff = torch.abs(total_target_val-target_val) < 0.01
+                loss_diff_l_t = torch.tensor(loss_diff, dtype=torch.float).cuda()
+                
+                loss_val = target_val > 0.99
+                
+                loss_b_l.append(loss_bool_l_t*loss_diff_l_t)
+                total_exit_loss += BCE(exit_r_t[b_i,t_i], (loss_bool_l_t*loss_diff_l_t).unsqueeze(-1).repeat(1,1,r.shape[2]-1))
+    print("total: {}, 0: {}, 1: {}".format(total_cnt, loss_b_l.count(0.0), loss_b_l.count(1.0)))
+#         loss_b_l_t = torch.stack(loss_b_l, dim=0)
+    return total_exit_loss/total_cnt
+
                 
     
 
@@ -1276,11 +1341,8 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
 
     model.module.partialBN(not args.no_partialbn)
     # switch to train mode
-    model.train()
-    
-#    model.eval()
-#    model.module.early_stop_decision_block.train()
-
+    #model.train()
+    args.use_early_exit_inf = False
     end = time.time()
     print("#%s# lr:%.4f\ttau:%.4f" % (
         args.exp_header, optimizer.param_groups[-1]['lr'] * 0.1, tau if use_ada_framework else 0))
@@ -1335,7 +1397,7 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
                     policy_gt_losses.update(policy_gt_loss.item(), input.size(0))
                     
                 if args.use_early_exit:
-                    early_exit_loss = early_exit_criterion_loss(criterion, exit_r_t, r, feat_outs, target_var)
+                    early_exit_loss = early_exit_future_criterion_loss(criterion, exit_r_t, r, feat_outs, target_var)
                     early_exit_loss = efficiency_weight * early_exit_loss
                     early_exit_losses.update(early_exit_loss.item(), input.size(0))
                     
@@ -1411,7 +1473,7 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
             elif args.use_conf_btw_blocks:
                 loss = acc_loss + eff_loss + policy_gt_loss + inner_aloss 
                 if args.use_early_exit:
-                    loss += early_exit_loss
+                    loss = early_exit_loss
             else:
 #                 loss = acc_loss
                 loss = acc_loss + eff_loss
@@ -1548,7 +1610,7 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
 
 
 def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writer=None):
-    batch_time, losses, top1, top5 = get_average_meters(4)
+    batch_time, losses, top1, top5, early_exit_cnts = get_average_meters(5)
     tau = 0
     # TODO(yue)
     all_results = []
@@ -1634,6 +1696,7 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
 
     # switch to evaluate mode
     model.eval()
+    args.use_early_exit_inf = True
 
     end = time.time()
     
@@ -1691,8 +1754,10 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                         noisy_policy_losses.update(noisy_policy_loss.item(), input.size(0))
                         
                     if args.use_early_exit:
-                        early_exit_loss = early_exit_criterion_loss(criterion, exit_r_t, r, feat_outs, target)
-                        early_exit_loss = efficiency_weight * early_exit_loss
+                        early_exit_loss = early_exit_future_criterion_loss(criterion, exit_r_t, r, feat_outs, target)
+                        early_exit_loss = early_exit_loss
+
+#                         early_exit_loss = efficiency_weight * early_exit_loss
                         early_exit_losses.update(early_exit_loss.item(), input.size(0))
                     
                     if args.use_early_stop:
@@ -1743,7 +1808,7 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                 elif args.use_conf_btw_blocks:
                     loss = acc_loss + eff_loss + policy_gt_loss + inner_aloss
                     if args.use_early_exit:
-                        loss += early_exit_loss
+                        loss = early_exit_loss
                 else:
 #                     loss = acc_loss
                     loss = acc_loss + eff_loss
@@ -1751,7 +1816,8 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                 if args.use_early_stop:
                     loss = loss + early_stop_gt_loss
             else:
-                output = model(input=[input])
+                output, early_exit_cnt = model(input=[input])
+                early_exit_cnts.update((torch.sum(early_exit_cnt, dtype=torch.float)/(input.size(0)*torch.tensor(16.0)).item()), input.size(0)*torch.tensor(16.0))
                 loss = get_criterion_loss(criterion, output, target)
                 
             
@@ -1865,6 +1931,8 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                                 'Prec@5 {top5.val:.3f} ({top5.avg:.3f})\t'.format(
                     i, len(val_loader), batch_time=batch_time, loss=losses,
                     top1=top1, top5=top5))
+                
+
 
                 if use_ada_framework:
                     roh_r = reverse_onehot(r[-1, :, :].detach().cpu().numpy())
@@ -1909,9 +1977,11 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                         print_output += '\n e_x_l {e_x_loss.val:.4f} ({e_x_loss.avg:.4f}) \t' .format(
                             e_x_loss=early_exit_losses
                         )
+                
                         
                     print_output += extra_each_loss_str(each_terms)
-
+                else:
+                    print("early_exit_ratio : {}".format(early_exit_cnts.avg) )
                 print(print_output)
 
     mAP, _ = cal_map(torch.cat(all_results, 0).cpu(),
