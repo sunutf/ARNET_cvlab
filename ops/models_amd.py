@@ -159,6 +159,8 @@ class TSN_Amd(nn.Module):
 
         
         lstm_feat_dim = 2048   #getattr(self.base_model, 'fc').in_features
+        if self.args.diff_to_rnn:
+            feat_dim = feat_dim//2
         if self.args.amd_consensus_type == "lstm":
             self.last_rnn = torch.nn.LSTMCell(input_size=feat_dim, hidden_size=lstm_feat_dim)
             self.new_fc = make_a_linear(feat_dim, self.num_class)
@@ -170,7 +172,6 @@ class TSN_Amd(nn.Module):
         
         else:
             self.new_fc = make_a_linear(feat_dim, self.num_class)
-            
 
     
     def _prepare_pos_encoding(self):
@@ -375,7 +376,6 @@ class TSN_Amd(nn.Module):
         
         sup_return = None
         sup2_return = None
-       # input_data = input_data.detach()
         if name in self.block_rnn_dict.keys(): # gate activate = policy on 
             base_out = self.block_fc_backbone(name, input_data, self.block_fc_dict[name])
             if self.args.pe_at_rnn:
@@ -383,7 +383,6 @@ class TSN_Amd(nn.Module):
             
             old_hx = None
             old_cx = None
-
             batch_size = base_out.shape[0]
             hx = init_hidden(batch_size, self.args.hidden_dim)
             cx = init_hidden(batch_size, self.args.hidden_dim)
@@ -412,11 +411,11 @@ class TSN_Amd(nn.Module):
                 else:
                     rnn_input = base_out[:, t]
                     if self.args.diff_to_rnn:
-                        
-                        recent_base_out = torch.cat([base_out[b_i, store_recent_pass[b_i][-1]].unsqueeze(0) for b_i in range(batch_size)], dim=0)
-                        rnn_input = torch.cat((rnn_input, (rnn_input - recent_base_out)), dim = 1)
+                        input_feat_t = base_out[:, t]
+#                         recent_base_out = torch.cat([base_out[b_i, store_recent_pass[b_i][-1]].unsqueeze(0) for b_i in range(batch_size)], dim=0)
+                        rnn_input = torch.cat((input_feat_t, (input_feat_t - store_recent_pass_out)), dim = 1)
                     
-                    elif self.args.diff_to_policy:
+                    if self.args.diff_to_policy:
                         cossim = torch.nn.CosineSimilarity(dim=1, eps=1e-6)
                         relu = torch.nn.ReLU()
                         
@@ -456,8 +455,8 @@ class TSN_Amd(nn.Module):
                     elif self.args.use_local_policy_module: 
                         cossim = torch.nn.CosineSimilarity(dim=1, eps=1e-6)
                         avgpool = torch.nn.AdaptiveAvgPool2d(output_size=(1, 1))
-                        _prev_input_out = avgpool(_prev_input_data_t).squeeze(-1)#B, C, 1 -> #B, C
-                        _input_out = avgpool(_input_data_t).squeeze(-1) #B, C, 1 -> #B, C
+                        _prev_input_out = avgpool(_prev_input_data_t).squeeze(-1)#B, C, 1
+                        _input_out = avgpool(_input_data_t).squeeze(-1) #B, C, 1
                         
                         similarity_list.append(cossim(_prev_input_out,_input_out)) #B
 
@@ -468,7 +467,6 @@ class TSN_Amd(nn.Module):
                         feat_t = hx
                         noisy_r = F.softmax(self.action_fc_dict[name](feat_t), dim=1).clamp(min=1e-8)
                         
-                       
                         p_r_t = torch.log(redundant_r)
                         redundant_r_t = torch.cat(
                             [F.gumbel_softmax(p_r_t[b_i:b_i + 1], tau, True) for b_i in range(p_r_t.shape[0])])
@@ -478,14 +476,14 @@ class TSN_Amd(nn.Module):
                             [F.gumbel_softmax(p_n_t[b_i:b_i + 1], tau, True) for b_i in range(p_n_t.shape[0])])
                         
                         r_t = redundant_r_t*noisy_r_t
-#                         print(redundant_r_t, noisy_r_t, r_t, similaritylist)
                         #p_t = torch.log(redundant_r * noisy_r) #B,2 * B,2
                         #r_t = torch.cat([F.gumbel_softmax(p_t[b_i:b_i + 1], tau, True) for b_i in range(p_t.shape[0])])
                         redundant_r_list.append(redundant_r_t)
                         noisy_r_list.append(noisy_r_t)
                         
                         _prev_input_data_t = _input_data_t
-                    
+
+
                     else:
                         hx, cx = self.block_rnn_dict[name](rnn_input, (hx, cx))
                         feat_t = hx
@@ -514,49 +512,31 @@ class TSN_Amd(nn.Module):
                     if self.args.use_conf_btw_blocks or self.args.use_local_policy_module:
                         raw_r_list.append(r_t)
                     
-                    if self.args.use_sim_first:
-                        cossim = torch.nn.CosineSimilarity(dim=1, eps=1e-6)
-                        avgpool = torch.nn.AdaptiveAvgPool2d(output_size=(1, 1))
-                        _prev_input_out = avgpool(_prev_input_data_t).squeeze(-1)#B, C, 1 -> #B, C
-                        _input_out = avgpool(_input_data_t).squeeze(-1) #B, C, 1 -> #B, C
-                        
-                        sim_l_t = cossim(_prev_input_out,_input_out) #B, C
-                        
-                        sim_bool = sim_l_t < 0.995
-                        take_skip_r = torch.tensor(~sim_bool, dtype=torch.float).cuda()
-                        take_curr_r = torch.tensor(sim_bool, dtype=torch.float).cuda()
-                        skip_dummy_r_t = torch.cat([torch.ones(batch_size,1), torch.zeros(batch_size, 1)], 1).cuda() #B, A
-                        r_t =  take_skip_r * skip_dummy_r_t + take_curr_r * r_t                        
-                        
-                    take_old = old_r_t[:,-2].unsqueeze(-1)
-                    take_curr = old_r_t[:,-1].unsqueeze(-1)
+                    
+#                     take_old = old_r_t[:,-2].unsqueeze(-1)
+#                     take_curr = old_r_t[:,-1].unsqueeze(-1)
                     take_bool =  old_r_t[:,-1].unsqueeze(-1) > 0.5
                     take_old_ = torch.tensor(~take_bool, dtype=torch.float).cuda()
                     take_curr_ = torch.tensor(take_bool, dtype=torch.float).cuda()
                     r_t = old_r_t * take_old_ + r_t * take_curr_
-                                        
-                    check_to_store_bool = r_t[:,-1].unsqueeze(-1)>0.5
-                    check_to_store = torch.tensor(check_to_store_bool, dtype=torch.float).cuda()
-                    store_recent_pass_out = rnn_input * check_to_store
+                    r_list.append(r_t)  
                                                       
                     if old_hx is not None:
-#                         hx = old_hx * take_old_ + hx * take_curr_
-                        take_now_bool = r_t[:,-1].unsqueeze(-1) > 0.5
-                        
-                        take_hx_bool = take_bool * take_now_bool #STOP/PASS before. * STOP/PASS now.
-                        take_hx_old = torch.tensor(~take_hx_bool, dtype=torch.float).cuda()
-                        take_hx_curr = torch.tensor(take_hx_bool, dtype=torch.float).cuda()
-                        hx = old_hx * take_hx_old + hx * take_hx_curr
-                        cx = old_cx * take_hx_old + cx * take_hx_curr
-                        _input_data_t = _prev_input_data_t * take_hx_old.unsqueeze(-1).unsqueeze(-1) + _input_data_t * take_hx_curr.unsqueeze(-1).unsqueeze(-1)
-                        
-                        
-                    r_list.append(r_t)  
+                        hx = old_hx * take_old_ + hx * take_curr_
+#                         take_now_bool = r_t[:,-1].unsqueeze(-1) > 0.5
+
+#                         take_hx_bool = take_bool * take_now_bool #STOP/PASS before. * STOP/PASS now.
+#                         take_hx_old = torch.tensor(~take_hx_bool, dtype=torch.float).cuda()
+#                         take_hx_curr = torch.tensor(take_hx_bool, dtype=torch.float).cuda()
+#                         hx = old_hx * take_hx_old + hx * take_hx_curr
+#                         cx = old_cx * take_hx_old + cx * take_hx_curr
+
+                    if self.args.diff_to_rnn:
+                            store_recent_pass_out = store_recent_pass_out * take_hx_old + input_feat_t * take_hx_curr
+                    
                     hx_list.append(hx)
                     old_hx = hx
                     old_cx = cx
-                    _prev_input_data_t = _input_data_t
-
             #check all skip case
 #             r_list = torch.stack(r_list, dim=1)
 #             _check_empty_candidate = r_list.sum(dim=1)
@@ -807,8 +787,60 @@ class TSN_Amd(nn.Module):
                 return_supp = choose_selected_es
 
             else:
+                if not self.training:
+                    if self.args.use_early_stop_inf:
+                        modify_candidate_list = []
+                        selected_bool = candidate_list[:,:,-1].unsqueeze(-1) > 0.5 #B, T
+                        selected_block_outs = block_out * torch.tensor(selected_bool, dtype=torch.float).cuda()
+                        num_class = block_out.shape[-1]                            
+                            
+                        early_stop_thr = 0.99
+                        for b_i in range(batch_size):
+                            max_i = self.time_steps
+                            early_stop_limit = 2
+                            avg_block_out = 0
+                            selected_frame_cnt = 0.0
+                            output_class_dict = {}
+                            output_val = 0.0
+                            boundary_start = False
+                            for t_i in range(self.time_steps):
+                                avg_block_out += selected_block_outs[b_i, t_i, :]
+                                is_selected = candidate_list[b_i,t_i,-1] > 0.5
+                                if is_selected: 
+                                    selected_frame_cnt +=1
+                                    output_base_out = F.softmax(avg_block_out/selected_frame_cnt, dim=-1)
+                                    candidate_output_class = output_base_out.max(dim=0)[1].cpu().item()
+                                    candidate_output_val = output_base_out.max(dim=0)[0].cpu()
+                                    output_base_out_indi = F.softmax(selected_block_outs[b_i, t_i, :], dim=-1)
+                                    candidate_output_val_indi = output_base_out_indi.max(dim=0)[0].cpu()
+                                    if candidate_output_val > early_stop_thr:
+                                        boundary_start = True
+                                    if candidate_output_val > early_stop_thr:
+                                        if candidate_output_class in output_class_dict:
+                                            output_class_dict[candidate_output_class] -= 1
+                                            if output_class_dict[candidate_output_class] is 0:
+                                                max_i = (t_i+1)
+                                                break                                    
+                                        else:
+                                            output_class_dict[candidate_output_class] = early_stop_limit-1
+                                else:
+                                    if boundary_start:
+                                        max_i = (t_i+1)
+                                        break
+                                        
+                            stage_cnt= len(candidate_log_list)
+                            modify_candidate_list.append(torch.cat((torch.ones(max_i, stage_cnt), torch.zeros(self.time_steps-max_i, stage_cnt)), dim=0).cuda()) #T,K
+                    
+                        modify_candidate_l_t = torch.stack(modify_candidate_list, dim=0) # B, T, K
+                        candidate_log_list = modify_candidate_l_t * torch.stack(candidate_log_list, dim=2)
+                        output = self.amd_combine_logits(candidate_log_list[:,:,-1], block_out, voter_list)
+                    else:
+                        candidate_log_list = torch.stack(candidate_log_list, dim=2)
+                
+                else:
+                    candidate_log_list = torch.stack(candidate_log_list, dim=2)
+
                 return_supp = block_out
-                candidate_log_list = torch.stack(candidate_log_list, dim=2)
             
             
         elif self.args.amd_consensus_type == "random_avg":

@@ -3,7 +3,7 @@ from ops.basic_ops import ConsensusModule
 from ops.transforms import *
 from torch.nn.init import normal_, constant_
 import torch.nn.functional as F
-from efficientnet_pytorch import EfficientNet
+#from efficientnet_pytorch import EfficientNet
 from ops.net_flops_table import feat_dim_dict
 from ops.amd_net_flops_table import feat_dim_of_res50_block
 
@@ -380,12 +380,11 @@ class TSN_Amd(nn.Module):
         sup_return = None
         sup2_return = None
         # input_data = input_data.detach()
-        with torch.no_grad():
-            base_out_dict = {}
-            for name in self.block_rnn_dict:
-                input_data = input_data_dict[name]
-                base_out_dict[name] = self.block_fc_backbone(name, input_data, self.block_fc_dict[name])
-            batch_size = base_out_dict[name].shape[0]
+        base_out_dict = {}
+        for name in self.block_rnn_dict:
+            input_data = input_data_dict[name]
+            base_out_dict[name] = self.block_fc_backbone(name, input_data, self.block_fc_dict[name])
+        batch_size = base_out_dict[name].shape[0]
         
         hx_l_t = init_hidden(batch_size, self.args.hidden_dim).unsqueeze(1).repeat(1, len(self.block_rnn_dict.keys()), 1) 
         cx_l_t = init_hidden(batch_size, self.args.hidden_dim).unsqueeze(1).repeat(1, len(self.block_rnn_dict.keys()), 1)
@@ -406,16 +405,14 @@ class TSN_Amd(nn.Module):
                 rnn_input = base_out_dict[name][:, t]
                 hx = hx_l_t[:,i]
                 cx = cx_l_t[:,i]
-                with torch.no_grad():
-                    hx, cx = self.block_rnn_dict[name](rnn_input, (hx, cx))
-                    feat_t = hx
-                    p_t = torch.log(F.softmax(self.action_fc_dict[name](feat_t), dim=1).clamp(min=1e-8))
-                    r_t = torch.cat(
-                        [F.gumbel_softmax(p_t[b_i:b_i + 1], tau, True) for b_i in range(p_t.shape[0])])
-
-                    if self.args.use_conf_btw_blocks or self.args.use_local_policy_module:
-                        raw_r_list.append(r_t)
-                        raw_hx_list.append(hx)
+                hx, cx = self.block_rnn_dict[name](rnn_input, (hx, cx))
+                feat_t = hx
+                p_t = torch.log(F.softmax(self.action_fc_dict[name](feat_t), dim=1).clamp(min=1e-8))
+                r_t = torch.cat(
+                    [F.gumbel_softmax(p_t[b_i:b_i + 1], tau, True) for b_i in range(p_t.shape[0])])
+                if self.args.use_conf_btw_blocks or self.args.use_local_policy_module:
+                    raw_r_list.append(r_t)
+                    raw_hx_list.append(hx)
 
                 if self.args.use_early_exit:
                     input_feat_t = feat_t.detach().clone()
@@ -463,6 +460,13 @@ class TSN_Amd(nn.Module):
         input_data = avgpool(input_data)
         input_data = torch.nn.Dropout(p=self.dropout)(input_data).squeeze(-1).squeeze(-1)
         return self.block_fc_backbone(name, input_data, self.new_fc)
+    
+    def pass_last_feat(self, input_data):
+        avgpool = torch.nn.AdaptiveAvgPool2d(output_size=(1, 1))
+        input_data = avgpool(input_data)
+        input_data = torch.nn.Dropout(p=self.dropout)(input_data).squeeze(-1).squeeze(-1)
+        return input_data
+
                     
     
     def pass_last_rnn_block(self, name, input_data, candidate):
@@ -560,31 +564,33 @@ class TSN_Amd(nn.Module):
             kwargs["tau"] = None
         tau = kwargs["tau"]
         feat_dict = {}
-        with torch.no_grad():
-            for name in self.block_cnn_dict.keys():
+        for name in self.block_cnn_dict.keys():
                 # input image tensor with 224 size
-                _input = self.pass_cnn_block(name, _input)
-                feat_dict[name] = _input
+            _input = self.pass_cnn_block(name, _input)
+            feat_dict[name] = _input
         
         #B,T,K,2/  B,T,K,feat/ B,T,K,2
         r_l_t, hx_l_t, all_policy_result_l_t, exit_r_t = self.gate_fc_rnn_block_full(feat_dict, tau) 
                 
-        with torch.no_grad():
-            if self.args.use_conf_btw_blocks:
-                for i, name in enumerate(self.block_rnn_list):
-                    block_out_list.append(self.pass_pred_block(name, hx_l_t[:,:,i,:]))
+        if self.args.use_conf_btw_blocks:
+            for i, name in enumerate(self.block_rnn_list):
+                block_out_list.append(self.pass_pred_block(name, hx_l_t[:,:,i,:]))
         
             
         return_supp = None
         if self.args.amd_consensus_type == "avg":
-            with torch.no_grad():
-                last_feat = feat_dict[list(self.block_cnn_dict.keys())[-1]]
-                if self.args.use_conf_btw_blocks:
-                    block_out = self.pass_last_fc_block('new_fc', last_feat)
-                    block_out_list.append(block_out)
+            last_feat = feat_dict[list(self.block_cnn_dict.keys())[-1]]
+            if self.args.use_conf_btw_blocks:
+                if self.args.avg_before_cls:
+                    before_avg_feat = self.pass_last_feat(last_feat).view(batch_size, self.time_steps, -1)
+                    
+                block_out = self.pass_last_fc_block('new_fc', last_feat)
 
-                else:
-                    block_out = self.pass_last_fc_block('new_fc', last_feat)
+            else:
+                block_out = self.pass_last_fc_block('new_fc', last_feat)
+                
+            block_out_list.append(block_out)
+
             
             if self.args.use_early_stop_inf and not self.training :
                 modify_candidate_list = []
@@ -687,9 +693,13 @@ class TSN_Amd(nn.Module):
                 r_l_t = modify_candidate_l_t.unsqueeze(-1) * r_l_t
                 
                         
-                
-                
-            output = self.amd_combine_logits(r_l_t[:,:,-1,-1], block_out)
+            if self.args.avg_before_cls: 
+                selected_feat = before_avg_feat*r_l_t[:,:,-1,-1].unsqueeze(-1) #B, T, C 
+                avg_selected_feat = torch.mean(selected_feat, 1) #B, C
+                output = self.new_fc(avg_selected_feat)
+            else:
+                output = self.amd_combine_logits(r_l_t[:,:,-1,-1], block_out)
+            
             return_supp = block_out
             
             
