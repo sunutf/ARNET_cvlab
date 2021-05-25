@@ -4,8 +4,9 @@ import torch
 from PIL import Image
 import os
 import numpy as np
+import pdb
 from numpy.random import randint
-
+from ops.localization import get_anet_meta
 
 class VideoRecord(object):
     def __init__(self, row):
@@ -38,6 +39,12 @@ class TSNDataSet(data.Dataset):
                  rescale_to=224, policy_input_offset=None, save_meta=False):
 
         self.root_path = root_path
+        subset = 'val' if test_mode else 'train'
+
+        if dataset == 'actnet':
+            self.meta = get_anet_meta(os.path.join(self.root_path,'../activity_net.v1-3.min.json'), subset)
+        else:
+            self.meta = None
 
         self.list_file = \
             ".".join(list_file.split(".")[:-1]) + "." + list_file.split(".")[-1]  # TODO
@@ -195,16 +202,38 @@ class TSNDataSet(data.Dataset):
             segment_indices = self._get_test_indices(record)
         return self.get(record, segment_indices)
 
+
+    def get_loc_label(self, record, indices):
+        if self.dataset != 'actnet':
+            return None
+        meta = self.meta[record.path]
+        num_frame = record.num_frames
+        
+        duration = meta['duration']
+        annos = meta['annotations']
+        local_anno = []
+        loc_label = np.zeros(indices.shape)
+        for anno in annos:
+            ind = indices.copy()
+            label = anno['label']
+            st, ed = anno['segment']
+            st = st * num_frame / duration
+            ed = ed * num_frame / duration
+            loc_label += np.logical_and(ind >=st, ind <= ed)
+
+        return loc_label
+
     def get(self, record, indices):
 
         images = list()
-        img_path_list = list()
         for seg_ind in indices:
             images.extend(self._load_image(record.path, int(seg_ind)))
 
-
         process_data = self.transform(images)
-        if self.ada_reso_skip :
+
+        loc_label = self.get_loc_label(record, indices)
+
+        if self.ada_reso_skip:
             return_items = [process_data]
             if self.random_crop:
                 rescaled = [self.random_crop_proc(process_data, (x, x)) for x in self.reso_list[1:]]
@@ -229,12 +258,8 @@ class TSNDataSet(data.Dataset):
                     rescaled = self.center_crop_proc(process_data, (x, x))
                 else:
                     rescaled = self.rescale_proc(process_data, (x, x))
-            
-            return_items = [rescaled]
-            if self.save_meta:
-                return_items = return_items + [record.path] + [indices]  # [torch.tensor(indices)]
-            return_items = return_items + [record.label]           
-            return tuple(return_items)
+
+            return rescaled, record.label, loc_label
 
     # TODO(yue)
     # (NC, H, W)->(NC, H', W')
