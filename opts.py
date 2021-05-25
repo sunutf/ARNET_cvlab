@@ -96,6 +96,15 @@ parser.add_argument('--repeat_batch', default=1, type=int)
 parser.add_argument('--use_early_stop', action='store_true', help='early stopping')
 parser.add_argument('--random_ratio', default=50, type=int)
 parser.add_argument('--use_local_policy_module', action='store_true', help='divide policy module')
+parser.add_argument('--use_weight_decay', action='store_true', help='weight decay')
+parser.add_argument('--use_early_stop_inf', action='store_true', help='early_stop_inf')
+parser.add_argument('--use_early_exit_inf', action='store_true', help='early_exit_inf')
+parser.add_argument('--avg_before_cls', action='store_true', help='avg_before_cls')
+
+
+parser.add_argument('--use_early_exit', action='store_true', help='early_exit')
+
+
 
 
 parser.add_argument('--amd_consensus_type', type=str, default='avg') 
@@ -195,3 +204,4 @@ parser.add_argument('--negative_loss', action='store_true')
 # TODO(yue) Exps/data paths
 parser.add_argument('--data_dir', type=str, default="../../datasets/activity-net-v1.3")
 parser.add_argument('--log_dir', type=str, default="../../logs_tsm")
+
