@@ -1,7 +1,7 @@
 import json
 import pdb
 
-def get_anet_meta(json_file, subset='train'):
+def get_anet_meta(json_file, subset='train_and_val'):
     data = json.load(open(json_file, 'r'))
     texonomy_data = data['taxonomy']
     database_data = data['database']
