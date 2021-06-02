@@ -42,7 +42,7 @@ class TSNDataSet(data.Dataset):
         subset = 'val' if test_mode else 'train'
 
         if dataset == 'actnet':
-            self.meta = get_anet_meta(os.path.join(self.root_path,'../activity_net.v1-3.min.json'), subset)
+            self.meta = get_anet_meta(os.path.join(self.root_path,'../activity_net.v1-3.min.json'))
         else:
             self.meta = None
 
@@ -54,20 +54,14 @@ class TSNDataSet(data.Dataset):
         self.random_shift = random_shift
         self.test_mode = test_mode
         self.remove_missing = remove_missing
-        self.dense_sample = dense_sample  # using dense sample as I3D
-        self.twice_sample = twice_sample  # twice sample for more validation
 
-        # TODO(yue)
         self.dataset = dataset
         self.partial_fcvid_eval = partial_fcvid_eval
         self.partial_ratio = partial_ratio
-        self.ada_reso_skip = ada_reso_skip
-        self.reso_list = reso_list
         self.random_crop = random_crop
         self.center_crop = center_crop
         self.ada_crop_list = ada_crop_list
         self.rescale_to = rescale_to
-        self.policy_input_offset = policy_input_offset
         self.save_meta = save_meta
 
         if self.dense_sample:
@@ -233,33 +227,18 @@ class TSNDataSet(data.Dataset):
 
         loc_label = self.get_loc_label(record, indices)
 
-        if self.ada_reso_skip:
-            return_items = [process_data]
-            if self.random_crop:
-                rescaled = [self.random_crop_proc(process_data, (x, x)) for x in self.reso_list[1:]]
-            elif self.center_crop:
-                rescaled = [self.center_crop_proc(process_data, (x, x)) for x in self.reso_list[1:]]
-            else:
-                rescaled = [self.rescale_proc(process_data, (x, x)) for x in self.reso_list[1:]]
-            return_items = return_items + rescaled
-            if self.save_meta:
-                return_items = return_items + [record.path] + [indices]  # [torch.tensor(indices)]
-            return_items = return_items + [record.label]
-
-            return tuple(return_items)
+        if self.rescale_to == 224:
+            rescaled = process_data
         else:
-            if self.rescale_to == 224:
-                rescaled = process_data
+            x = self.rescale_to
+            if self.random_crop:
+                rescaled = self.random_crop_proc(process_data, (x, x))
+            elif self.center_crop:
+                rescaled = self.center_crop_proc(process_data, (x, x))
             else:
-                x = self.rescale_to
-                if self.random_crop:
-                    rescaled = self.random_crop_proc(process_data, (x, x))
-                elif self.center_crop:
-                    rescaled = self.center_crop_proc(process_data, (x, x))
-                else:
-                    rescaled = self.rescale_proc(process_data, (x, x))
+                rescaled = self.rescale_proc(process_data, (x, x))
 
-            return rescaled, record.label, loc_label
+        return rescaled, record.label, loc_label, record.path, indices
 
     # TODO(yue)
     # (NC, H, W)->(NC, H', W')
