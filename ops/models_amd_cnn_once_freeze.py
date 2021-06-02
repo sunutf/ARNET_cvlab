@@ -12,6 +12,7 @@ from torch.distributions import Categorical
 import math
 from .transformer import TransformerModel, PositionalEncoding, ScaledDotProductAttention
 import pdb
+import random
 
 def init_hidden(batch_size, cell_size):
     init_cell = torch.Tensor(batch_size, cell_size).zero_()
@@ -68,7 +69,6 @@ class TSN_Amd(nn.Module):
             self.block_fc_dict    = nn.ModuleDict()
             self.action_fc_dict   = nn.ModuleDict()
             self.pos_encoding_dict = nn.ModuleDict()
-            self.block_rnn2fc_dict = nn.ModuleDict()
             if self.args.use_distil_loss_to_rnn or self.args.use_conf_btw_blocks:
                 self.block_pred_rnn_fc_dict = nn.ModuleDict()
             elif self.args.use_distil_loss_to_cnn:
@@ -132,8 +132,7 @@ class TSN_Amd(nn.Module):
             )
             if self.args.diff_to_rnn:
                 feat_dim = feat_dim*2
-            
-#             self.block_rnn2fc_dict[name] = make_a_linear(feat_dim, self.args.hidden_dim)
+
             self.block_rnn_dict[name] = torch.nn.LSTMCell(input_size=feat_dim, hidden_size=self.args.hidden_dim)
             self.action_fc_dict[name] = make_a_linear(self.args.hidden_dim, self.amd_action_dim)
             if self.args.use_early_stop:
@@ -382,12 +381,12 @@ class TSN_Amd(nn.Module):
         sup_return = None
         sup2_return = None
         # input_data = input_data.detach()
-
-        base_out_dict = {}
-        for name in self.block_rnn_dict:
-            input_data = input_data_dict[name]
-            base_out_dict[name] = self.block_fc_backbone(name, input_data, self.block_fc_dict[name])
-        batch_size = base_out_dict[name].shape[0]
+        with torch.no_grad():
+            base_out_dict = {}
+            for name in self.block_rnn_dict:
+                input_data = input_data_dict[name]
+                base_out_dict[name] = self.block_fc_backbone(name, input_data, self.block_fc_dict[name])
+            batch_size = base_out_dict[name].shape[0]
         
         hx_l_t = init_hidden(batch_size, self.args.hidden_dim).unsqueeze(1).repeat(1, len(self.block_rnn_dict.keys()), 1) 
         cx_l_t = init_hidden(batch_size, self.args.hidden_dim).unsqueeze(1).repeat(1, len(self.block_rnn_dict.keys()), 1)
@@ -408,23 +407,22 @@ class TSN_Amd(nn.Module):
                 rnn_input = base_out_dict[name][:, t]
                 hx = hx_l_t[:,i]
                 cx = cx_l_t[:,i]
-#                 hx = self.block_rnn2fc_dict[name](rnn_input)
-#                 hx = torch.max(torch.stack([hx, self.block_rnn2fc_dict[name](rnn_input)], dim=2), dim=2)
-                hx, cx = self.block_rnn_dict[name](rnn_input, (hx, cx))
+                with torch.no_grad():
+                    hx, cx = self.block_rnn_dict[name](rnn_input, (hx, cx))
+                    feat_t = hx
+                    p_t = torch.log(F.softmax(self.action_fc_dict[name](feat_t), dim=1).clamp(min=1e-8))
+                    r_t = torch.cat(
+                        [F.gumbel_softmax(p_t[b_i:b_i + 1], tau, True) for b_i in range(p_t.shape[0])])
 
-
-                feat_t = hx
-                p_t = torch.log(F.softmax(self.action_fc_dict[name](feat_t), dim=1).clamp(min=1e-8))
-                r_t = torch.cat(
-                    [F.gumbel_softmax(p_t[b_i:b_i + 1], tau, True) for b_i in range(p_t.shape[0])])
-
-                if self.args.use_conf_btw_blocks or self.args.use_local_policy_module:
-                    raw_r_list.append(r_t)
-                    raw_hx_list.append(hx)
+                    if self.args.use_conf_btw_blocks or self.args.use_local_policy_module:
+                        raw_r_list.append(r_t)
+                        raw_hx_list.append(hx)
 
                 if self.args.use_early_exit:
                     input_feat_t = feat_t.detach().clone()
                     exit_r = F.sigmoid(self.early_exit_dict[name](input_feat_t)).clamp(min=1e-8)
+#                     exit_r = self.early_exit_dict[name](input_feat_t).clamp(min=1e-8)
+
                     exit_r_list.append(exit_r)
 
                 take_bool =  old_r_t[:,-1].unsqueeze(-1) > 0.5
@@ -434,9 +432,7 @@ class TSN_Amd(nn.Module):
                 take_curr = torch.tensor(take_bool, dtype=torch.float).cuda()
                 r_t = old_r_t * take_old + r_t * take_curr
                 old_r_t = r_t
-#                 _r_t = old_r_t * take_old + r_t * take_curr
-#                 old_r_t = _r_t
-    
+                
                 per_time_r_list.append(r_t)  
                 local_hx_list.append(hx)
                 local_cx_list.append(cx)
@@ -544,10 +540,6 @@ class TSN_Amd(nn.Module):
         input_list = kwargs["input"]
         batch_size = input_list[0].shape[0]  # TODO(yue) input[0] B*(TC)*H*W
         _input = input_list[0]
-        if "epoch" in kwargs:
-            self.epoch = kwargs["epoch"]
-        else:
-            self.epoch=0
 
         if self.args.skip_twice:
             candidate_list = torch.cat([torch.zeros(batch_size, self.time_steps, 1), torch.zeros(batch_size, self.time_steps, 1), torch.ones(batch_size, self.time_steps, 1)], 2) #B, T, A
@@ -571,87 +563,43 @@ class TSN_Amd(nn.Module):
             kwargs["tau"] = None
         tau = kwargs["tau"]
         feat_dict = {}
-        for name in self.block_cnn_dict.keys():
-            # input image tensor with 224 size
-            _input = self.pass_cnn_block(name, _input)
-            feat_dict[name] = _input
+        with torch.no_grad():
+            for name in self.block_cnn_dict.keys():
+                # input image tensor with 224 size
+                _input = self.pass_cnn_block(name, _input)
+                feat_dict[name] = _input
         
         #B,T,K,2/  B,T,K,feat/ B,T,K,2
         r_l_t, hx_l_t, all_policy_result_l_t, exit_r_t = self.gate_fc_rnn_block_full(feat_dict, tau) 
                 
-        if self.args.use_conf_btw_blocks:
-            for i, name in enumerate(self.block_rnn_list):
-                block_out_list.append(self.pass_pred_block(name, hx_l_t[:,:,i,:]))
-
+        with torch.no_grad():
+            if self.args.use_conf_btw_blocks:
+                for i, name in enumerate(self.block_rnn_list):
+                    block_out_list.append(self.pass_pred_block(name, hx_l_t[:,:,i,:]))
+        
             
         return_supp = None
         if self.args.amd_consensus_type == "avg":
-            last_feat = feat_dict[list(self.block_cnn_dict.keys())[-1]]
-            if self.args.use_conf_btw_blocks:
-                block_out = self.pass_last_fc_block('new_fc', last_feat)
-                block_out_list.append(block_out)
+            with torch.no_grad():
+                last_feat = feat_dict[list(self.block_cnn_dict.keys())[-1]]
+                if self.args.use_conf_btw_blocks:
+                    block_out = self.pass_last_fc_block('new_fc', last_feat)
+                    block_out_list.append(block_out)
 
-            else:
-                block_out = self.pass_last_fc_block('new_fc', last_feat)
+                else:
+                    block_out = self.pass_last_fc_block('new_fc', last_feat)
             
-#             if self.args.use_early_stop_inf and not self.training :
-#                 modify_candidate_list = []
-#                 selected_bool = r_l_t[:,:,-1,-1].unsqueeze(-1) > 0.5 #B, T
-#                 selected_block_outs = block_out * torch.tensor(selected_bool, dtype=torch.float).cuda()
-#                 num_class = block_out.shape[-1]
-
-#                 early_stop_thr = 0.999
-#                 for b_i in range(batch_size):
-#                     max_i = self.time_steps
-#                     early_stop_limit = 1
-#                     avg_block_out = 0
-#                     selected_frame_cnt = torch.tensor(0.0, dtype=torch.float)
-#                     output_class_dict = {}
-#                     output_val = 0.0
-#                     boundary_start = False
-#                     for t_i in range(self.time_steps):
-#                         avg_block_out += selected_block_outs[b_i, t_i, :]
-#                         is_selected = r_l_t[b_i,t_i,-1,-1] > 0.5
-#                         if is_selected: 
-#                             selected_frame_cnt +=1
-#                             output_base_out = F.softmax(avg_block_out/selected_frame_cnt, dim=-1)
-
-#                             candidate_output_class = output_base_out.max(dim=0)[1].cpu().item()
-#                             candidate_output_val = output_base_out.max(dim=0)[0].cpu()
-# #                             if candidate_output_val > early_stop_thr:
-# #                                 boundary_start = True
-
-
-#                             if candidate_output_val > early_stop_thr:
-#                                 if candidate_output_class in output_class_dict:
-#                                     output_class_dict[candidate_output_class] -= 1
-#                                     if output_class_dict[candidate_output_class] is 0:
-#                                         max_i = (t_i+1)
-#                                         break                                    
-#                                 else:
-#                                     output_class_dict[candidate_output_class] = early_stop_limit-1
-#                                     max_i = (t_i+1)
-#                                     break  
-# #                         else:
-# #                             if boundary_start:
-# #                                 max_i = (t_i+1)
-# #                                 break
-#                     stage_cnt= r_l_t.shape[2]
-#                     modify_candidate_list.append(torch.cat((torch.ones(max_i, stage_cnt), torch.zeros(self.time_steps-max_i, stage_cnt)), dim=0).cuda()) #B * K,1
-
-#                 modify_candidate_l_t = torch.stack(modify_candidate_list, dim=0) # B, T, K
-#                 r_l_t = modify_candidate_l_t.unsqueeze(-1) * r_l_t
-                
             if self.args.use_early_stop_inf and not self.training :
                 modify_candidate_list = []
                 selected_bool = r_l_t[:,:,-1,-1].unsqueeze(-1) > 0.5 #B, T
                 selected_block_outs = block_out * torch.tensor(selected_bool, dtype=torch.float).cuda()
                 num_class = block_out.shape[-1]
 
-                early_stop_thr = 0.999
+#                     output_idxs = output.squeeze(1).max(dim=1)[1].cpu().numpy()
+                early_stop_thr = 0.95
                 for b_i in range(batch_size):
                     max_i = self.time_steps
-                    early_stop_limit = 4
+                    early_stop_limit = 3
                     avg_block_out = 0
                     selected_frame_cnt = torch.tensor(0.0, dtype=torch.float)
                     output_class_dict = {}
@@ -660,17 +608,30 @@ class TSN_Amd(nn.Module):
                     for t_i in range(self.time_steps):
                         avg_block_out += selected_block_outs[b_i, t_i, :]
                         is_selected = r_l_t[b_i,t_i,-1,-1] > 0.5
-                        
-                        
-                        if is_selected:
+                        if is_selected: 
                             selected_frame_cnt +=1
                             output_base_out = F.softmax(avg_block_out/selected_frame_cnt, dim=-1)
+#                             output_base_out = avg_block_out/selected_frame_cnt
+
+                            candidate_output_class = output_base_out.max(dim=0)[1].cpu().item()
                             candidate_output_val = output_base_out.max(dim=0)[0].cpu()
+#                             candidate_output_val_indi = output_base_out.max(dim=0)[0].cpu()
+#                             if candidate_output_val > early_stop_thr:
+#                                 boundary_start = True
 
-                            if (t_i > early_stop_limit-1) and (candidate_output_val > early_stop_thr):
+
+                            if candidate_output_val > early_stop_thr:
+                                if candidate_output_class in output_class_dict:
+                                    output_class_dict[candidate_output_class] -= 1
+                                    if output_class_dict[candidate_output_class] is 0:
+                                        max_i = (t_i+1)
+                                        break                                    
+                                else:
+                                    output_class_dict[candidate_output_class] = early_stop_limit-1
+                        else:
+                            if boundary_start:
                                 max_i = (t_i+1)
-                                break                                    
-
+                                break
                     stage_cnt= r_l_t.shape[2]
                     modify_candidate_list.append(torch.cat((torch.ones(max_i, stage_cnt), torch.zeros(self.time_steps-max_i, stage_cnt)), dim=0).cuda()) #B * K,1
 
@@ -681,6 +642,7 @@ class TSN_Amd(nn.Module):
             if self.args.use_early_exit_inf and not self.training:
                 exit_flag_bool = exit_r_t > 0.6
                 exit_flag_t = torch.tensor(exit_flag_bool, dtype=torch.float).cuda()
+                print(exit_r_t[:,:,-1])
 #                 pdb.set_trace()
 #                 pdb.set_trace()
 #                 skipped_layer_bool_prev = r_l_t[:,:,:-1,-1] < 0.5
@@ -729,27 +691,11 @@ class TSN_Amd(nn.Module):
 
                 modify_candidate_l_t = torch.stack(modify_candidate_list, dim=0) # B, T, K
                 r_l_t = modify_candidate_l_t.unsqueeze(-1) * r_l_t
-              
+                
+                        
+                
+                
             output = self.amd_combine_logits(r_l_t[:,:,-1,-1], block_out)
-#             output = self.fixed_amd_combine_logits(r_l_t, block_out)
-            
-#             if not self.training:
-#                 accum_r_l = []
-#                 _old_r_t = r_l_t[:, :, 0, :]
-#                 accum_r_l.append(_old_r_t)
-#                 _b, _t, _k, _a = r_l_t.shape #B, T, K, 2
-#                 for k_i in range(1, _k):
-#                     _curr_r_t = r_l_t[:,:,k_i,:]
-#                     take_bool = _old_r_t[:,:,-1].unsqueeze(-1) >0.5
-#                     take_curr = torch.tensor(take_bool, dtype=torch.float).cuda()
-#                     take_old = torch.tensor(~take_bool, dtype=torch.float).cuda()
-
-#                     _old_r_t = take_old * _old_r_t + take_curr * _curr_r_t
-#                     accum_r_l.append(_old_r_t)
-
-#                 r_l_t = torch.stack(accum_r_l, dim=2) #B, T, K, 2
-
-
             return_supp = block_out
             
             
@@ -792,39 +738,9 @@ class TSN_Amd(nn.Module):
         # voter_list N, T, 1
         batch_size = base_out.shape[0]
         pred_tensor = base_out
-
-        _r = r
-        r_tensor = _r.unsqueeze(-1)
-        t_tensor = torch.sum(_r, dim=[1]).unsqueeze(-1).clamp(1)  # TODO sum T, K to count frame
-        
-        return (pred_tensor * r_tensor).sum(dim=[1]) / t_tensor
-    
-    
-    def fixed_amd_combine_logits(self, r, base_out):
-        # TODO r         B, T, K, 2
-        # TODO base_out  B, T, #class
-        
-        batch_size = base_out.shape[0]
-        pred_tensor = base_out
-
-        _r = r
-        if self.training:
-            accum_r = _r.prod(dim=2)[:,:,-1]
-            
-            if self.args.use_stoch_select:
-                xor_dummy = (torch.rand(accum_r.shape).cuda() < (1/16)).float()
-                accum_r = accum_r *(1-xor_dummy) + (xor_dummy) * (1-accum_r)
-
-           
-            r_tensor = accum_r.unsqueeze(-1) #B, T, 1
-            t_tensor = torch.sum(r_tensor, dim=[1, 2]).unsqueeze(-1).clamp(1)  # TODO sum T, K to count frame
-            
-        else:
-            selected = torch.sum(_r[:,:,:,-1], dim=[2]) == ( len(self.args.block_rnn_list)+1 ) #B, T
-            r_tensor = torch.tensor(selected, dtype=torch.float).unsqueeze(-1).cuda() #B, T, 1
-            t_tensor = torch.sum(r_tensor, dim=[1, 2]).unsqueeze(-1).clamp(1)  # TODO sum T, K to count frame
-            
-        
+        r_tensor = r.unsqueeze(-1)
+        t_tensor = torch.sum(r, dim=[1]).unsqueeze(-1).clamp(1)  # TODO sum T, K to count frame
+       
         return (pred_tensor * r_tensor).sum(dim=[1]) / t_tensor
 
         

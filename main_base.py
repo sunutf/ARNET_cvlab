@@ -643,11 +643,10 @@ def amd_cal_eff(r, all_policy_r):
     gflops_vec, t_vec, tt_vec = amd_get_gflops_t_tt_vector()
     t_vec = torch.tensor(t_vec).cuda()
     
-    for i in range(1, len(gflops_vec)):
-        gflops_vec[i] += gflops_vec[i-1]
-    
-
-    total_gflops = gflops_vec[-1]
+#     for i in range(1, len(gflops_vec)):
+#         gflops_vec[i] += gflops_vec[i-1]
+#     total_gflops = gflops_vec[-1]
+    total_gflops = sum(gflops_vec)
     for i in range(len(gflops_vec)):
         gflops_vec[i] = total_gflops - gflops_vec[i]
     gflops_vec[-1] += 0.00001
@@ -933,6 +932,30 @@ def confidence_criterion_loss(criterion, all_policy_r, feat_outs, target):
     
     return policy_gt_loss/total_cnt, inner_acc_loss/total_acc_cnt
 
+def indep_confidence_criterion_loss(criterion, all_policy_r, feat_outs, target):
+    # all_policy_r B,T,K-1,A
+    # feat_outs B,T,(K-1)+1,#class
+    policy_gt_loss = 0
+    inner_acc_loss = 0
+    _target = target[:,0]
+    total_cnt = 0.0
+    total_acc_cnt = 0.0
+    
+    batch_size  = feat_outs.shape[0]
+    time_length = feat_outs.shape[1]
+    layer_cnt   = feat_outs.shape[2]
+    
+    inner_feat_outs = feat_outs[:, :, :-1, :]
+    for k_i in range(layer_cnt-1):
+        r_tensor = all_policy_r[:,:,k_i,-1].unsqueeze(-1)
+        t_tensor = torch.sum(all_policy_r[:,:,k_i,-1], dim=[1]).unsqueeze(-1).clamp(1)
+        inner_feat_out = (inner_feat_outs[:,:,k_i,:] * r_tensor).sum(dim=[1])/t_tensor
+        inner_acc_loss += criterion(inner_feat_out, _target)
+        
+        
+    
+    return inner_acc_loss/(layer_cnt-1), inner_acc_loss/(layer_cnt-1)
+
 def confidence_criterion_loss_selected(criterion, all_policy_r, feat_outs, target):
     # all_policy_r B,T,K-1,A
     # feat_outs B,T,(K-1)+1,#class
@@ -968,6 +991,52 @@ def confidence_criterion_loss_selected(criterion, all_policy_r, feat_outs, targe
     
     
     return policy_gt_loss/max(total_cnt, 1.0), inner_acc_loss/max(total_acc_cnt, 1.0)
+
+def guide_criterion_loss_selected(criterion, all_policy_r, feat_outs, target, output, epoch):
+    # all_policy_r B,T,K-1,A
+    # feat_outs B,T,(K-1)+1,#class
+    policy_gt_loss = 0
+    inner_acc_loss = 0
+    _target = target[:,0]
+    _feat_outs = F.softmax(feat_outs[:,:,-1,:], dim=-1)
+
+    total_cnt = 0.0
+    total_acc_cnt = 0.0
+    
+    batch_size  = feat_outs.shape[0]
+    time_length = feat_outs.shape[1]
+    layer_cnt   = feat_outs.shape[2]
+    
+    ###
+    selected = (torch.sum(all_policy_r[:,:,:,-1], dim=[2]) == all_policy_r.shape[2]) #B,T
+
+    
+    ###
+    exp_decay_factor = np.log(1.0/0.9)/float(60)
+    output_val, output_class = torch.max(F.softmax(output, 1),dim=1)#B
+    
+    ###
+    conf_bool_l = []
+    for b_i in range(batch_size):
+        conf_bool = _feat_outs[b_i,:,output_class[b_i]] > (0.9 * np.exp(exp_decay_factor * epoch))
+        conf_t = torch.tensor(conf_bool, dtype=torch.long) #T
+        conf_bool_l.append(conf_t)
+    
+    conf_l_t = torch.stack(conf_bool_l, dim=0).cuda() #B,T
+    
+
+    t_f_bool = output_class == _target
+    t_f_t = torch.tensor(t_f_bool, dtype=torch.long).cuda() #B, 1
+    
+    ###
+    target_policy = conf_l_t * t_f_t.unsqueeze(-1).repeat(1, time_length) #B, T
+    for b_i in range(batch_size):
+        for t_i in range(time_length):
+            total_cnt += 1.0
+            policy_gt_loss += criterion(all_policy_r[b_i, t_i, :, :], target_policy[b_i,t_i].unsqueeze(-1).repeat(layer_cnt-1))
+
+    
+    return policy_gt_loss/max(total_cnt, 1.0), policy_gt_loss/max(total_cnt, 1.0)
 
 def early_stop_criterion_loss(criterion, all_policy_r, early_stop_r, feat_outs, target):
     # early_stop_r B, T, 2
@@ -1378,7 +1447,7 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
     for i, input_tuple in enumerate(train_loader):
         data_time.update(time.time() - end)  # TODO(yue) measure data loading time
 
-        target = input_tuple[-1].cuda()
+        target = input_tuple[1].cuda()
         target_var = torch.autograd.Variable(target)
 
         input = input_tuple[0]
@@ -1399,7 +1468,7 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
                 elif args.use_local_policy_module:
                     output, r, all_policy_r, base_outs, dual_policy_r, similarity_r = model(input=input_var_list, tau=tau)
                 else:
-                    output, r, all_policy_r, feat_outs, base_outs = model(input=input_var_list, tau=tau)
+                    output, r, all_policy_r, feat_outs, base_outs, _ = model(input=input_var_list, tau=tau)
                 
                 acc_loss = get_criterion_loss(criterion, output, target_var)
 
@@ -1414,8 +1483,9 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
                     kld_losses.update(kld_loss.item(), input.size(0))
                     
                 if args.use_conf_btw_blocks:
-                    policy_gt_loss, inner_aloss= confidence_criterion_loss(criterion, all_policy_r, feat_outs, target_var)
-#                     policy_gt_loss, inner_aloss= confidence_criterion_loss_selected(criterion, all_policy_r, feat_outs, target_var)
+#                     policy_gt_loss, inner_aloss= confidence_criterion_loss(criterion, all_policy_r, feat_outs, target_var)
+#                     policy_gt_loss, inner_aloss = guide_criterion_loss_selected(criterion, all_policy_r, feat_outs, target_var, output, epoch)
+                    policy_gt_loss, inner_aloss= confidence_criterion_loss_selected(criterion, all_policy_r, feat_outs, target_var)
 
                     policy_gt_loss = efficiency_weight * policy_gt_loss
                     inner_aloss = accuracy_weight * inner_aloss
@@ -1498,7 +1568,9 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
                 loss = acc_loss + eff_loss + kld_loss
             elif args.use_conf_btw_blocks:
                 loss = acc_loss + eff_loss + policy_gt_loss + inner_aloss 
-#                 loss = acc_loss + policy_gt_loss + inner_aloss 
+#                 loss = acc_loss + eff_loss + inner_aloss 
+
+#                 loss = acc_loss + policy_gt_loss
 
                 if args.use_early_exit:
                     loss += early_exit_loss
@@ -1643,6 +1715,7 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
     # TODO(yue)
     all_results = []
     all_targets = []
+    all_local = {"TN":0, "FN":0, "FP":0, "TP":0}
     all_all_preds = []
 
     i_dont_need_bb = True
@@ -1736,6 +1809,8 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
         for i, input_tuple in enumerate(val_loader):
             #input_tuple = input_tuple[0]
             target = input_tuple[-1].cuda()
+#             local_target = input_tuple[2].cuda()
+#             pdb.set_trace()
             input = input_tuple[0]
 
             # compute output
@@ -1754,7 +1829,7 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                     elif args.use_local_policy_module:
                         output, r, all_policy_r, base_outs, dual_policy_r, similarity_r = model(input=input_tuple[:-1 + meta_offset], tau=tau)
                     else:
-                        output, r, all_policy_r, feat_outs, base_outs = model(input=input_tuple[:-1 + meta_offset], tau=tau)
+                        output, r, all_policy_r, feat_outs, base_outs, _ = model(input=input_tuple[:-1 + meta_offset], tau=tau)
                     acc_loss = get_criterion_loss(criterion, output, target)
 
                 if use_ada_framework:
@@ -1766,8 +1841,10 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                         kld_losses.update(kld_loss.item(), input.size(0))
 
                     elif args.use_conf_btw_blocks:
-                        policy_gt_loss, inner_aloss= confidence_criterion_loss(criterion, all_policy_r, feat_outs, target)
-#                         policy_gt_loss, inner_aloss= confidence_criterion_loss_selected(criterion, all_policy_r, feat_outs, target)
+#                         policy_gt_loss, inner_aloss= confidence_criterion_loss(criterion, all_policy_r, feat_outs, target)
+#                         policy_gt_loss, inner_aloss = guide_criterion_loss_selected(criterion, all_policy_r, feat_outs, target, output, epoch)
+
+                        policy_gt_loss, inner_aloss= confidence_criterion_loss_selected(criterion, all_policy_r, feat_outs, target)
 
                         policy_gt_loss = efficiency_weight * policy_gt_loss
                         inner_aloss = accuracy_weight * inner_aloss
@@ -1834,7 +1911,9 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                     loss = acc_loss + eff_loss + kld_loss
                 elif args.use_conf_btw_blocks:
                     loss = acc_loss + eff_loss + policy_gt_loss + inner_aloss
-#                     loss = acc_loss + policy_gt_loss + inner_aloss 
+#                     loss = acc_loss + eff_loss + inner_aloss
+
+#                     loss = acc_loss + policy_gt_loss 
 
                     if args.use_early_exit:
                         loss += early_exit_loss
@@ -1877,6 +1956,9 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
             if args.visual_log != '':
                 target_val = target.cpu().numpy()[0][0]
                 output_val = output.max(dim=1)[1].cpu().numpy()[0]
+#                 loc_target_val = local_target.cpu().numpy()[0]
+#                 loc_output_val = r[:,:,-1].cpu().numpy()[0]
+                
             
                 input_path_list = list()
                 image_tmpl='image_{:05d}.jpg'
@@ -1901,6 +1983,11 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                 print('output')
                 print(output_val)
                 print('r')
+#                 print('loc_target')
+#                 print(loc_target_val)
+#                 print('loc_output')
+#                 print(loc_output_val)
+                
                 for i in range(1):
                     print(reverse_onehot(r[i, :, :].cpu().numpy()))
 
@@ -1914,6 +2001,12 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                 visual_log.write('\n')
                 visual_log.write(str(output_val))
                 visual_log.write('\n')
+#                 visual_log.write(str(loc_target_val))
+#                 visual_log.write('\n')
+#                 visual_log.write(str(loc_output_val))
+#                 visual_log.write('\n')
+
+                
                 for i in range(1):
                     visual_log.writelines(str(reverse_onehot(r[i, :, :].cpu().numpy())))
                 visual_log.write('\n')
@@ -1921,7 +2014,14 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
             # TODO(yue)
             all_results.append(output)
             all_targets.append(target)
+#             total_loc = (local_target+2*r[:,:,-1]).cpu().numpy()# (0,1) + 2*(0,1) =? TN:0 FN:1 FP:2 TP:3
+#             all_local['TN'] += np.count_nonzero(total_loc == 0)
+#             all_local['FN'] += np.count_nonzero(total_loc == 1)
+#             all_local['FP'] += np.count_nonzero(total_loc == 2)
+#             all_local['TP'] += np.count_nonzero(total_loc == 3)
+            
 
+            
             if not i_dont_need_bb:
                 for bb_i in range(len(all_bb_results)):
                     all_bb_results[bb_i].append(base_outs[:, bb_i])
@@ -1947,9 +2047,9 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                     skip_twice_r = all_policy_r[:,:,:,-2]
                     skip_twice_r_list.append(skip_twice_r.detach().cpu().numpy())
 
-                if args.save_meta:
-                    name_list += input_tuple[-3]
-                    indices_list.append(input_tuple[-2])
+#                 if args.save_meta:
+#                     name_list += input_tuple[-3]
+#                     indices_list.append(input_tuple[-2])
 
             if i % args.print_freq == 0:
                 print_output = ('Test: [{0:03d}/{1:03d}] '
@@ -2003,8 +2103,12 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                         print_output += '\n e_x_l {e_x_loss.val:.4f} ({e_x_loss.avg:.4f}) \t' .format(
                             e_x_loss=early_exit_losses
                         )
-                        
-                    print_output += extra_each_loss_str(each_terms)
+                    
+#                     #TN:0 FN:1 FP:2 TP:3
+#                     print_output += extra_each_loss_str(each_terms)
+#                     print_output += '\n location TP:{}, FP:{}, FN:{} ,TN: {} \t'.format(
+#                         all_local['TP'], all_local['FP'], all_local['FN'], all_local['TN']
+#                     )
 
                 print(print_output)
 

@@ -100,6 +100,10 @@ parser.add_argument('--use_weight_decay', action='store_true', help='weight deca
 parser.add_argument('--use_early_stop_inf', action='store_true', help='early_stop_inf')
 parser.add_argument('--use_early_exit_inf', action='store_true', help='early_exit_inf')
 parser.add_argument('--avg_before_cls', action='store_true', help='avg_before_cls')
+parser.add_argument('--use_stoch_select', action='store_true', help='use_stoch_select')
+parser.add_argument('--use_early_stop_mean_inf', action='store_true', help='use_early_stop_mean_inf')
+
+
 
 
 parser.add_argument('--use_early_exit', action='store_true', help='early_exit')
