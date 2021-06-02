@@ -35,7 +35,7 @@ class TSNDataSet(data.Dataset):
                  random_shift=True, test_mode=False,
                  remove_missing=False, dense_sample=False, twice_sample=False,
                  dataset=None, partial_fcvid_eval=False, partial_ratio=None,
-                 ada_reso_skip=False, reso_list=None, random_crop=False, center_crop=False, ada_crop_list=None,
+                 random_crop=False, center_crop=False, ada_crop_list=None,
                  rescale_to=224, policy_input_offset=None, save_meta=False):
 
         self.root_path = root_path
@@ -53,6 +53,8 @@ class TSNDataSet(data.Dataset):
         self.transform = transform
         self.random_shift = random_shift
         self.test_mode = test_mode
+        self.dense_sample = dense_sample  # using dense sample as I3D
+        self.twice_sample = twice_sample  # twice sample for more validation
         self.remove_missing = remove_missing
 
         self.dataset = dataset

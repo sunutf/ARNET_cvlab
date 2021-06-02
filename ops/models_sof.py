@@ -56,7 +56,7 @@ class TSN_Sof(nn.Module):
                 self.block_pred_rnn_fc_dict = nn.ModuleDict()
             
             self.block_rnn_list = self.args.block_rnn_list
-            self.amd_action_dim = 2
+            self.action_dim = 2
 
             self._split_base_cnn_to_block(self.base_model)
             self._prepare_policy_block(self.base_model)
@@ -92,7 +92,7 @@ class TSN_Sof(nn.Module):
             )
          
             self.block_rnn_dict[name] = torch.nn.LSTMCell(input_size=feat_dim, hidden_size=self.args.hidden_dim)
-            self.action_fc_dict[name] = make_a_linear(self.args.hidden_dim, self.amd_action_dim)
+            self.action_fc_dict[name] = make_a_linear(self.args.hidden_dim, self.action_dim)
 
             if self.args.use_conf_btw_blocks:
                 self.block_pred_rnn_fc_dict[name] =  make_a_linear(self.args.hidden_dim, self.num_class)
@@ -129,7 +129,7 @@ class TSN_Sof(nn.Module):
         Override the default train() to freeze the BN parameters
         :return:
         """
-        super(TSN_Amd, self).train(mode)
+        super(TSN_Sof, self).train(mode)
         if self._enable_pbn and mode:
             print("Freezing BatchNorm2D except the first one.")
             if self.args.ada_reso_skip:
@@ -381,7 +381,7 @@ class TSN_Sof(nn.Module):
                 block_out_list.append(self.pass_pred_block(name, hx_l_t[:,:,i,:]))
 
         return_supp = None
-        if self.args.amd_consensus_type == "avg":
+        if self.args.consensus_type == "avg":
             last_feat = feat_dict[list(self.block_cnn_dict.keys())[-1]]
             if self.args.use_conf_btw_blocks:
                 block_out = self.pass_last_fc_block('new_fc', last_feat)
@@ -423,10 +423,10 @@ class TSN_Sof(nn.Module):
             return_supp = block_out
             
             
-        elif self.args.amd_consensus_type == "random_avg":
+        elif self.args.consensus_type == "random_avg":
             block_out = self.pass_last_fc_block('new_fc', feat_dict[list(self.block_cnn_dict.keys())[-1]])
             
-            r_all = torch.zeros(batch_size, self.time_steps, self.amd_action_dim).cuda()
+            r_all = torch.zeros(batch_size, self.time_steps, self.action_dim).cuda()
             for i_bs in range(batch_size):
                 for i_t in range(self.time_steps):
                     rand = 1 if torch.randint(100, [1]) < self.args.random_ratio else 0

@@ -225,13 +225,10 @@ def main():
                    dataset=args.dataset,
                    partial_fcvid_eval=args.partial_fcvid_eval,
                    partial_ratio=args.partial_ratio,
-                   ada_reso_skip=args.ada_reso_skip,
-                   reso_list=args.reso_list,
                    random_crop=args.random_crop,
                    center_crop=args.center_crop,
                    ada_crop_list=args.ada_crop_list,
                    rescale_to=args.rescale_to,
-                   policy_input_offset=args.policy_input_offset,
                    save_meta=args.save_meta),
         batch_size=args.batch_size, shuffle=True,
         num_workers=args.workers, pin_memory=True,
@@ -251,13 +248,10 @@ def main():
                    dataset=args.dataset,
                    partial_fcvid_eval=args.partial_fcvid_eval,
                    partial_ratio=args.partial_ratio,
-                   ada_reso_skip=args.ada_reso_skip,
-                   reso_list=args.reso_list,
                    random_crop=args.random_crop,
                    center_crop=args.center_crop,
                    ada_crop_list=args.ada_crop_list,
                    rescale_to=args.rescale_to,
-                   policy_input_offset=args.policy_input_offset,
                    save_meta=args.save_meta
                    ),
         batch_size=args.batch_size, shuffle=False,
@@ -443,34 +437,6 @@ def cal_eff(r, all_policy_r):
     return loss, each_losses    
 
 
-def get_gflops_t_tt_vector():
-    gflops_vec = []
-    t_vec = []
-    tt_vec = []
-
-    for i, backbone in enumerate(args.backbone_list):
-        if all([arch_name not in backbone for arch_name in ["resnet", "mobilenet", "efficientnet", "res3d", "csn"]]):
-            exit("We can only handle resnet/mobilenet/efficientnet/res3d/csn as backbone, when computing FLOPS")
-
-        for crop_i in range(args.ada_crop_list[i]):
-            the_flops = gflops_table[backbone + str(args.reso_list[i])]
-            gflops_vec.append(the_flops)
-            t_vec.append(1.)
-            tt_vec.append(1.)
-
-    if args.policy_also_backbone:
-        gflops_vec.append(0)
-        t_vec.append(1.)
-        tt_vec.append(1.)
-
-    for i, _ in enumerate(args.skip_list):
-        t_vec.append(1. if args.skip_list[i] == 1 else 1. / args.skip_list[i])
-        tt_vec.append(0)
-        gflops_vec.append(0)
-
-    return gflops_vec, t_vec, tt_vec
-
-
 def reverse_onehot(a):
     try:
         if args.stop_or_forward:
@@ -530,12 +496,9 @@ def kl_categorical(p_logit, q_logit):
     return torch.mean(_kl)
 
 def compute_acc_eff_loss_with_weights(acc_loss, eff_loss, each_losses, epoch):
-    if epoch > args.eff_loss_after:
-        acc_weight = args.accuracy_weight
-        eff_weight = args.efficency_weight
-    else:
-        acc_weight = 1.0
-        eff_weight = 0.0
+    acc_weight = args.accuracy_weight
+    eff_weight = args.efficency_weight
+
     return acc_loss * acc_weight, eff_loss * eff_weight, [x * eff_weight for x in each_losses]
 
 def compute_every_losses(r, all_policy_r, acc_loss, epoch):
@@ -560,7 +523,7 @@ def compute_exp_decay_tau(epoch):
     return args.init_tau * np.exp(args.exp_decay_factor * epoch)
 
 
-def get_policy_usage_str(r_list, skip_twice_r_list, act_dim):
+def get_policy_usage_str(r_list, act_dim):
     gflops_vec, t_vec, tt_vec = get_gflops_t_tt_vector()
     printed_str = ""
     rs = np.concatenate(r_list, axis=0)
@@ -599,12 +562,6 @@ def get_policy_usage_str(r_list, skip_twice_r_list, act_dim):
 def extra_each_loss_str(each_terms):
     loss_str_list = ["gf"]
     s = ""
-    if args.uniform_loss_weight > 1e-5:
-        loss_str_list.append("u")
-    if args.head_loss_weight > 1e-5:
-        loss_str_list.append("h")
-    if args.frames_loss_weight > 1e-5:
-        loss_str_list.append("f")
     for i in range(len(loss_str_list)):
         s += " %s:(%.4f)" % (loss_str_list[i], each_terms[i].avg)
     return s
@@ -636,13 +593,10 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
         if args.use_conf_btw_blocks:
             alosses, elosses, inner_alosses, policy_gt_losses, early_exit_losses = get_average_meters(5)
         else: 
-            alosses, elosses, kld_losses = get_average_meters(3)
+            alosses, elosses = get_average_meters(2)
                       
         each_terms = get_average_meters(NUM_LOSSES)
         r_list = []
-        kld_loss = 0
-        if args.skip_twice:
-            skip_twice_r_list = []
 
     meta_offset = -2 if args.save_meta else 0
 
@@ -718,10 +672,7 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
 
         if use_ada_framework:
             r_list.append(r.detach().cpu().numpy())
-            if args.skip_twice:
-                skip_twice_r = all_policy_r[:,:,:,-2]
-                skip_twice_r_list.append(skip_twice_r.detach().cpu().numpy())
-
+          
         if i % args.print_freq == 0:
             print_output = ('Epoch:[{0:02d}][{1:03d}/{2:03d}] '
                             'Time {batch_time.val:.3f} ({batch_time.avg:.3f}) '
@@ -749,7 +700,7 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
             print(print_output)
 
     if use_ada_framework:
-        usage_str, gflops = get_policy_usage_str(r_list, None, len(args.block_rnn_list)+1)
+        usage_str, gflops = get_policy_usage_str(r_list, len(args.block_rnn_list)+1)
         print(usage_str)
 
     if tf_writer is not None:
@@ -815,10 +766,8 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
         if args.use_conf_btw_blocks:
             alosses, elosses, inner_alosses, policy_gt_losses, early_exit_losses = get_average_meters(5)
         else: 
-            alosses, elosses, kld_losses = get_average_meters(3)
+            alosses, elosses = get_average_meters(2)
                       
-        kld_loss = 0
-        iter_list = args.backbone_list
         each_terms = get_average_meters(NUM_LOSSES)
         
         r_list = []
@@ -838,6 +787,7 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
     with torch.no_grad():
         for i, input_tuple in enumerate(val_loader):
             target = input_tuple[1].cuda()
+            local_target = input_tuple[2].cuda()
             input = input_tuple[0]
 
             # compute output
@@ -852,21 +802,19 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                     acc_loss, eff_loss, each_losses = compute_every_losses(r, all_policy_r, acc_loss, epoch)
                     acc_loss = acc_loss/args.accuracy_weight * accuracy_weight
                     eff_loss = eff_loss/args.efficency_weight* efficiency_weight
-                  
+                    for l_i, each_loss in enumerate(each_losses):
+                        each_terms[l_i].update(each_loss, input.size(0))
+                    
+                    loss = acc_loss + eff_loss
                     if args.use_conf_btw_blocks:
                         policy_gt_loss, inner_aloss= confidence_criterion_loss(criterion, all_policy_r, feat_outs, target)
                         policy_gt_loss = efficiency_weight * policy_gt_loss
                         inner_aloss = accuracy_weight * inner_aloss
                         inner_alosses.update(inner_aloss.item(), input.size(0))
                         policy_gt_losses.update(policy_gt_loss.item(), input.size(0))
+                        loss = loss + policy_gt_loss + inner_aloss
                         
-                    for l_i, each_loss in enumerate(each_losses):
-                        each_terms[l_i].update(each_loss, input.size(0))
-              
-                elif args.use_conf_btw_blocks:
-                    loss = acc_loss + eff_loss + policy_gt_loss + inner_aloss
-                else:
-                    loss = acc_loss + eff_loss
+                   
 
             else:
                 output = model(input=[input])
@@ -1028,7 +976,7 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
     
     gflops = 0
     if use_ada_framework:
-        usage_str, gflops = get_policy_usage_str(r_list, None, len(args.block_rnn_list)+1)
+        usage_str, gflops = get_policy_usage_str(r_list, len(args.block_rnn_list)+1)
         print(usage_str)
 
     if tf_writer is not None:
