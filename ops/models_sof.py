@@ -7,6 +7,7 @@ from ops.flops_table import feat_dim_of_res50_block
 
 from torch.distributions import Categorical
 import math
+import pdb 
 
 def init_hidden(batch_size, cell_size):
     init_cell = torch.Tensor(batch_size, cell_size).zero_()
@@ -14,10 +15,16 @@ def init_hidden(batch_size, cell_size):
         init_cell = init_cell.cuda()
     return init_cell
 
+def make_a_linear(input_dim, output_dim):
+    linear_model = nn.Linear(input_dim, output_dim)
+    normal_(linear_model.weight, 0, 0.001)
+    constant_(linear_model.bias, 0)
+    return linear_model
 
 class SqueezeTwice(torch.nn.Module):
     def forward(self, x):
         return x.squeeze(-1).squeeze(-1)
+    
     
 class TSN_Sof(nn.Module):
     def __init__(self, num_class, num_segments,
@@ -46,7 +53,8 @@ class TSN_Sof(nn.Module):
 
         self._prepare_base_model(base_model) #return self.base_model 
         self.consensus = ConsensusModule(consensus_type, args=self.args)
-      
+        
+        self._prepare_fc(self.num_class)
         if self.args.stop_or_forward:
             self.block_cnn_dict   = nn.ModuleDict()
             self.block_rnn_dict   = nn.ModuleDict()
@@ -76,13 +84,14 @@ class TSN_Sof(nn.Module):
         self.block_cnn_dict['conv_4'] = torch.nn.Sequential(*(list(_model.children())[6]))
         self.block_cnn_dict['conv_5'] = torch.nn.Sequential(*(list(_model.children())[7]))
         
-    def _prepare_policy_block(self, _model): 
-        def make_a_linear(input_dim, output_dim):
-            linear_model = nn.Linear(input_dim, output_dim)
-            normal_(linear_model.weight, 0, 0.001)
-            constant_(linear_model.bias, 0)
-            return linear_model
-        
+    def _prepare_fc(self, num_class):
+        feature_dim = getattr(self.base_model, self.base_model.last_layer_name).in_features
+        setattr(self.base_model, self.base_model.last_layer_name, nn.Dropout(p=self.dropout))
+        self.new_fc = make_a_linear(feature_dim, num_class)
+
+    
+    
+    def _prepare_policy_block(self, _model):         
         for name in self.args.block_rnn_list:
             feat_dim = feat_dim_of_res50_block[name]
             self.block_fc_dict[name] = torch.nn.Sequential(
@@ -97,7 +106,6 @@ class TSN_Sof(nn.Module):
             if self.args.use_conf_btw_blocks:
                 self.block_pred_rnn_fc_dict[name] =  make_a_linear(self.args.hidden_dim, self.num_class)
 
-        self.new_fc = make_a_linear(feat_dim, self.num_class)
     
 
     def _prep_a_net(self, model_name, shall_pretrain):
@@ -236,13 +244,12 @@ class TSN_Sof(nn.Module):
 
             if b_t_c:
                 input_b_t_c = input_data.view(_b, _t, _c, _h, _w)
+                feat = the_base_model(input_b_t_c, signal=signal, **kwargs)
+
             else:
                 input_2d = input_data.view(_b * _t, _c, _h, _w)  
-
-            if b_t_c:
-                feat = the_base_model(input_b_t_c, signal=signal, **kwargs)
-            else:
                 feat = the_base_model(input_2d)
+
         else:
             feat = the_base_model(input_data)
 
@@ -352,6 +359,13 @@ class TSN_Sof(nn.Module):
         return self.block_pred_rnn_fc_dict[name](feat.view(_b*_t, -1)).view(_b, _t, -1)
 
     def forward(self, *argv, **kwargs): 
+        
+        if not self.args.stop_or_forward:  # TODO simple TSN
+            base_out = self.block_cnn_backbone("base", kwargs["input"][0], self.base_model)
+            base_out = self.block_fc_backbone("base", base_out, self.new_fc)
+            output = torch.mean(base_out, dim=1)
+            return output.squeeze(1)
+        
         input_list = kwargs["input"]
         batch_size = input_list[0].shape[0]  
         _input = input_list[0]
@@ -372,10 +386,10 @@ class TSN_Sof(nn.Module):
         for name in self.block_cnn_dict.keys():
             _input = self.pass_cnn_block(name, _input)
             feat_dict[name] = _input
-        
+
         #B,T,K,2/  B,T,K,feat/ B,T,K,2
         r_l_t, hx_l_t, all_policy_result_l_t, exit_r_t = self.gate_fc_rnn_block_full(feat_dict, tau) 
-                
+
         if self.args.use_conf_btw_blocks:
             for i, name in enumerate(self.block_rnn_list):
                 block_out_list.append(self.pass_pred_block(name, hx_l_t[:,:,i,:]))

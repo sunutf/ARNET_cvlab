@@ -10,6 +10,7 @@ import torch.optim
 import torch.nn.functional as F
 from torch.nn.utils import clip_grad_norm_
 import math
+import shutil
 
 from ops.dataset import TSNDataSet
 from ops.models_sof import TSN_Sof
@@ -787,34 +788,35 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
     with torch.no_grad():
         for i, input_tuple in enumerate(val_loader):
             target = input_tuple[1].cuda()
-            local_target = input_tuple[2].cuda()
             input = input_tuple[0]
 
             # compute output
             if args.stop_or_forward:
+                local_target = input_tuple[2].cuda()
                 if args.use_conf_btw_blocks :
                     output, r, all_policy_r, feat_outs, early_stop_r, exit_r_t = model(input=input_tuple[:-1 + meta_offset], tau=tau)
                 else:
                     output, r, all_policy_r, feat_outs, base_outs, _ = model(input=input_tuple[:-1 + meta_offset], tau=tau)
+               
                 acc_loss = get_criterion_loss(criterion, output, target)
+                acc_loss, eff_loss, each_losses = compute_every_losses(r, all_policy_r, acc_loss, epoch)
+                acc_loss = acc_loss/args.accuracy_weight * accuracy_weight
+                eff_loss = eff_loss/args.efficency_weight* efficiency_weight
+                          
+                alosses.update(acc_loss.item(), input.size(0))
+                elosses.update(eff_loss.item(), input.size(0))
+                for l_i, each_loss in enumerate(each_losses):
+                    each_terms[l_i].update(each_loss, input.size(0))
 
-                if use_ada_framework:
-                    acc_loss, eff_loss, each_losses = compute_every_losses(r, all_policy_r, acc_loss, epoch)
-                    acc_loss = acc_loss/args.accuracy_weight * accuracy_weight
-                    eff_loss = eff_loss/args.efficency_weight* efficiency_weight
-                    for l_i, each_loss in enumerate(each_losses):
-                        each_terms[l_i].update(each_loss, input.size(0))
-                    
-                    loss = acc_loss + eff_loss
-                    if args.use_conf_btw_blocks:
-                        policy_gt_loss, inner_aloss= confidence_criterion_loss(criterion, all_policy_r, feat_outs, target)
-                        policy_gt_loss = efficiency_weight * policy_gt_loss
-                        inner_aloss = accuracy_weight * inner_aloss
-                        inner_alosses.update(inner_aloss.item(), input.size(0))
-                        policy_gt_losses.update(policy_gt_loss.item(), input.size(0))
-                        loss = loss + policy_gt_loss + inner_aloss
+                loss = acc_loss + eff_loss
+                if args.use_conf_btw_blocks:
+                    policy_gt_loss, inner_aloss= confidence_criterion_loss(criterion, all_policy_r, feat_outs, target)
+                    policy_gt_loss = efficiency_weight * policy_gt_loss
+                    inner_aloss = accuracy_weight * inner_aloss
+                    inner_alosses.update(inner_aloss.item(), input.size(0))
+                    policy_gt_losses.update(policy_gt_loss.item(), input.size(0))
+                    loss = loss + policy_gt_loss + inner_aloss
                         
-                   
 
             else:
                 output = model(input=[input])
@@ -900,11 +902,12 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
 
             all_results.append(output)
             all_targets.append(target)
-            total_loc = (local_target+2*r[:,:,-1]).cpu().numpy()# (0,1) + 2*(0,1) =? TN:0 FN:1 FP:2 TP:3
-            all_local['TN'] += np.count_nonzero(total_loc == 0)
-            all_local['FN'] += np.count_nonzero(total_loc == 1)
-            all_local['FP'] += np.count_nonzero(total_loc == 2)
-            all_local['TP'] += np.count_nonzero(total_loc == 3)
+            if args.stop_or_forward:
+                total_loc = (local_target+2*r[:,:,-1]).cpu().numpy()# (0,1) + 2*(0,1) =? TN:0 FN:1 FP:2 TP:3
+                all_local['TN'] += np.count_nonzero(total_loc == 0)
+                all_local['FN'] += np.count_nonzero(total_loc == 1)
+                all_local['FP'] += np.count_nonzero(total_loc == 2)
+                all_local['TP'] += np.count_nonzero(total_loc == 3)
 
             if not i_dont_need_bb:
                 for bb_i in range(len(all_bb_results)):
@@ -1026,8 +1029,11 @@ def setup_log_directory(logger, log_dir, exp_header):
     if args.ablation:
         return None
 
-    exp_full_name = "g%s_%s" % (logger._timestr, exp_header)
+#     exp_full_name = "g%s_%s" % (logger._timestr, exp_header)
+    exp_full_name = exp_header
     exp_full_path = ospj(log_dir, exp_full_name)
+    if os.path.exists(exp_full_path):
+        shutil.rmtree(exp_full_path)
     os.makedirs(exp_full_path)
     os.makedirs(ospj(exp_full_path, "models"))
     logger.create_log(exp_full_path, test_mode, args.num_segments, args.batch_size, args.top_k)
