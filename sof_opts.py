@@ -134,4 +134,3 @@ parser.add_argument('--save_all_preds', action='store_true')
 
 parser.add_argument('--data_dir', type=str, default="../../datasets/activity-net-v1.3")
 parser.add_argument('--log_dir', type=str, default="../../logs_tsm")
-

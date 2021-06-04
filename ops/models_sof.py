@@ -1,5 +1,4 @@
 from torch import nn
-from ops.basic_ops import ConsensusModule
 from ops.transforms import *
 from torch.nn.init import normal_, constant_
 import torch.nn.functional as F
@@ -25,7 +24,6 @@ class SqueezeTwice(torch.nn.Module):
     def forward(self, x):
         return x.squeeze(-1).squeeze(-1)
     
-    
 class TSN_Sof(nn.Module):
     def __init__(self, num_class, num_segments,
                  base_model='resnet101', consensus_type='avg', before_softmax=True, dropout=0.8,
@@ -36,11 +34,9 @@ class TSN_Sof(nn.Module):
         self.before_softmax = before_softmax
         self.dropout = dropout
         self.crop_num = crop_num
-        self.consensus_type = consensus_type
         self.pretrain = pretrain
         self.reverese_try_cnt = 0
         self.fc_lr5 = fc_lr5
-
 
         self.args = args
         self.input_mean = [0.485, 0.456, 0.406]
@@ -51,7 +47,6 @@ class TSN_Sof(nn.Module):
         self.time_steps = self.num_segments
 
         self._prepare_base_model(base_model) #return self.base_model 
-        self.consensus = ConsensusModule(consensus_type, args=self.args)
         
         self._prepare_fc(self.num_class)
         if self.args.stop_or_forward:
