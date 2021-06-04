@@ -43,7 +43,6 @@ class TSN_Sof(nn.Module):
 
 
         self.args = args
-        self.input_size = args.rescale_to
         self.input_mean = [0.485, 0.456, 0.406]
         self.input_std = [0.229, 0.224, 0.225]
         self.base_model_name = base_model
@@ -60,6 +59,7 @@ class TSN_Sof(nn.Module):
             self.block_rnn_dict   = nn.ModuleDict()
             self.block_fc_dict    = nn.ModuleDict()
             self.action_fc_dict   = nn.ModuleDict()
+            self.pos_encoding_dict = nn.ModuleDict()
             if self.args.use_conf_btw_blocks:
                 self.block_pred_rnn_fc_dict = nn.ModuleDict()
             
@@ -85,11 +85,11 @@ class TSN_Sof(nn.Module):
         self.block_cnn_dict['conv_5'] = torch.nn.Sequential(*(list(_model.children())[7]))
         
     def _prepare_fc(self, num_class):
-        feature_dim = getattr(self.base_model, self.base_model.last_layer_name).in_features
-        setattr(self.base_model, self.base_model.last_layer_name, nn.Dropout(p=self.dropout))
+        feature_dim = 2048
+        if not self.args.stop_or_forward:
+            feature_dim = getattr(self.base_model, self.base_model.last_layer_name).in_features
+            setattr(self.base_model, self.base_model.last_layer_name, nn.Dropout(p=self.dropout))
         self.new_fc = make_a_linear(feature_dim, num_class)
-
-    
     
     def _prepare_policy_block(self, _model):         
         for name in self.args.block_rnn_list:
@@ -106,7 +106,6 @@ class TSN_Sof(nn.Module):
             if self.args.use_conf_btw_blocks:
                 self.block_pred_rnn_fc_dict[name] =  make_a_linear(self.args.hidden_dim, self.num_class)
 
-    
 
     def _prep_a_net(self, model_name, shall_pretrain):
         if "efficientnet" in model_name:
@@ -125,6 +124,7 @@ class TSN_Sof(nn.Module):
 
 
     def _prepare_base_model(self, base_model):
+        self.input_size = 224
         if self.args.stop_or_forward:
             shall_pretrain = len(self.args.model_paths) == 0 or self.args.model_paths[0].lower() != 'none'
             self.base_model = self._prep_a_net(base_model, shall_pretrain)
@@ -140,13 +140,7 @@ class TSN_Sof(nn.Module):
         super(TSN_Sof, self).train(mode)
         if self._enable_pbn and mode:
             print("Freezing BatchNorm2D except the first one.")
-            if self.args.ada_reso_skip:
-                models = [self.lite_backbone]
-                if self.multi_models:
-                    models = models + self.base_model_list
-            else:
-                models = [self.base_model]
-
+            models = [self.base_model]
             for the_model in models:
                 count = 0
                 bn_scale = 1
