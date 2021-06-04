@@ -37,4 +37,4 @@ sh sof_test.sh
 
 
 
-Our code is based on [TSM](https://github.com/mit-han-lab/temporal-shift-module)
+Our code is based on [AR-Net](https://github.com/mengyuest/AR-Net.git)

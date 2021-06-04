@@ -21,9 +21,6 @@ from ops.utils import AverageMeter, accuracy, cal_map, Recorder
 
 from tensorboardX import SummaryWriter
 from ops.my_logger import Logger
-
-from ops.sal_rank_loss import cal_sal_rank_loss
-
 from ops.flops_table import get_gflops_params
 from ops.utils import get_mobv2_new_sd
 

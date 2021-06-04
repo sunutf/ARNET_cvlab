@@ -242,7 +242,6 @@ class TSNDataSet(data.Dataset):
 
         return rescaled, record.label, loc_label, record.path, indices
 
-    # TODO(yue)
     # (NC, H, W)->(NC, H', W')
     def rescale_proc(self, input_data, size):
         return torch.nn.functional.interpolate(input_data.unsqueeze(1), size=size, mode='nearest').squeeze(1)
