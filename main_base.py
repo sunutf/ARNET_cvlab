@@ -418,7 +418,11 @@ def cal_eff(r, all_policy_r):
     # r_loss : pass conv_2/ conv_3/ conv_4/ conv_5/ all
     gflops_vec, t_vec, tt_vec = get_gflops_t_tt_vector()
     t_vec = torch.tensor(t_vec).cuda()
-    total_gflops = sum(gflops_vec)
+    
+    for i  in range(1, len(gflops_vec)):
+        gflops_vec[i] += gflops_vec[i-1]
+    total_gflops = gflops_vec[-1]
+
     for i in range(len(gflops_vec)):
         gflops_vec[i] = total_gflops - gflops_vec[i]
     gflops_vec[-1] += 0.00001
