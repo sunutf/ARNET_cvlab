@@ -339,6 +339,12 @@ def set_random_seed(the_seed):
     if args.random_seed >= 0:
         np.random.seed(the_seed)
         torch.manual_seed(the_seed)
+        torch.cuda.manual_seed(the_seed)
+        torch.cuda.manual_seed_all(the_seed)
+        cudnn.benchmark = False
+        cudnn.deterministic = True
+        random.seed(the_seed)
+
 
 def init_gflops_table():
     global gflops_table
