@@ -651,11 +651,19 @@ def amd_cal_eff(r_, all_policy_r):
     # r_loss : pass conv_2/ conv_3/ conv_4/ conv_5/ all
     gflops_vec, t_vec, tt_vec = amd_get_gflops_t_tt_vector()
     t_vec = torch.tensor(t_vec).cuda()
+<<<<<<< HEAD
     '''
     for i in range(1, len(gflops_vec)):
         gflops_vec[i] += gflops_vec[i-1]
     total_gflops = gflops_vec[-1]
 #     total_gflops = sum(gflops_vec)
+=======
+    ''' 
+    for i in range(1, len(gflops_vec)):
+        gflops_vec[i] += gflops_vec[i-1]
+    total_gflops = gflops_vec[-1]
+
+>>>>>>> a397aa777ebef7dab43b4d3ddd5a7722ad78404c
     for i in range(len(gflops_vec)):
         gflops_vec[i] = total_gflops - gflops_vec[i]
     gflops_vec[-1] += 0.00001
@@ -663,6 +671,7 @@ def amd_cal_eff(r_, all_policy_r):
     #uni_gflops = np.sum(gflops_vec)/r.shape[2]
     if args.use_gflops_loss:
         r_loss = torch.tensor(gflops_vec).cuda()
+<<<<<<< HEAD
      #   r_loss = torch.tensor(np.multiply(gflops_vec,[6,5,4,3,2,1])).cuda()
      #    r_loss = torch.tensor([uni_gflops, uni_gflops, uni_gflops,uni_gflops, uni_gflops, uni_gflops, uni_gflops]).cuda()[:r.shape[2]]
     else:
@@ -671,6 +680,19 @@ def amd_cal_eff(r_, all_policy_r):
     r_last = (r_[:,:,-1] < 1).float()
     r_last = r_last.unsqueeze(-1).expand(b_, t_, c_)
     r_ = r_last * r_
+=======
+        #r_loss = torch.tensor(np.multiply(gflops_vec, [6,5,4,3,2,1])).cuda()
+#        r_loss = torch.tensor([uni_gflops, uni_gflops, uni_gflops,uni_gflops, uni_gflops, uni_gflops, uni_gflops]).cuda()[:r.shape[2]]
+    else:
+        r_loss = torch.tensor([4., 2., 1., 0.5, 0.25]).cuda()[:r.shape[2]]
+    
+    b_, t_, c_ = r_.shape
+    r_last = (r_[:,:,-1] < 1).float()
+    r_last = r_last.unsqueeze(-1).expand(b_, t_, c_)
+
+    r_ = r_last * r_
+
+>>>>>>> a397aa777ebef7dab43b4d3ddd5a7722ad78404c
     loss = torch.sum(torch.mean(r_[:,:,:-1], dim=[0, 1]) * r_loss[1:])
     #loss = torch.sum(torch.mean(r_, dim=[0, 1]) * r_loss)
     each_losses.append(loss.detach().cpu().item())
@@ -972,8 +994,8 @@ def indep_confidence_criterion_loss(criterion, all_policy_r, feat_outs, target):
 def confidence_criterion_loss_selected(criterion, all_policy_r, feat_outs, target):
     # all_policy_r B,T,K-1,A
     # feat_outs B,T,(K-1)+1,#class
-    policy_gt_loss = 0
-    inner_acc_loss = 0
+    policy_gt_loss = torch.tensor(0.0).cuda()
+    inner_acc_loss = torch.tensor(0.0).cuda()
     _feat_outs = F.softmax(feat_outs, dim=-1)
     _target = target[:,0]
     total_cnt = 0.0
