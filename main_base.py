@@ -13,8 +13,11 @@ from torch.nn.utils import clip_grad_norm_
 import math
 
 from ops.dataset import TSNDataSet
-from ops.models_ada import TSN_Ada
-# from ops.models_amd import TSN_Amd
+#from ops.models_ada import TSN_Ada
+from ops.models_ada_runtime import TSN_Ada
+#from ops.models_amd import TSN_Amd
+#from ops.models_amd_runtime import TSN_Amd
+
 from ops.models_amd_cnn_once import TSN_Amd
 from ops.transforms import *
 from opts import parser
@@ -482,6 +485,7 @@ def main():
 
     if args.evaluate:
         validate(val_loader, model, criterion, 0)
+
         return
 
     if not test_mode:
@@ -563,6 +567,11 @@ def set_random_seed(the_seed):
     if args.random_seed >= 0:
         np.random.seed(the_seed)
         torch.manual_seed(the_seed)
+        torch.cuda.manual_seed(the_seed)
+        torch.cuda.manual_seed_all(the_seed)
+        cudnn.benchmark = False
+        cudnn.deterministic = True
+        random.seed(the_seed)
 
 def amd_init_gflops_table():
     global gflops_table
@@ -636,30 +645,34 @@ def amd_get_gflops_t_tt_vector():
     return gflops_vec, t_vec, tt_vec #ex : (conv_2 skip, conv_3 skip, conv_4 skip, conv_5 skip, all_pass)
 
 
-def amd_cal_eff(r, all_policy_r):
+def amd_cal_eff(r_, all_policy_r):
     each_losses = []
     # TODO r N * T * (#which block exit, conv2/ conv_3/ conv_4/ conv_5/all)
     # r_loss : pass conv_2/ conv_3/ conv_4/ conv_5/ all
     gflops_vec, t_vec, tt_vec = amd_get_gflops_t_tt_vector()
     t_vec = torch.tensor(t_vec).cuda()
-    
-#     for i in range(1, len(gflops_vec)):
-#         gflops_vec[i] += gflops_vec[i-1]
-#     total_gflops = gflops_vec[-1]
-    total_gflops = sum(gflops_vec)
+    '''
+    for i in range(1, len(gflops_vec)):
+        gflops_vec[i] += gflops_vec[i-1]
+    total_gflops = gflops_vec[-1]
+#     total_gflops = sum(gflops_vec)
     for i in range(len(gflops_vec)):
         gflops_vec[i] = total_gflops - gflops_vec[i]
     gflops_vec[-1] += 0.00001
-
+    '''
     #uni_gflops = np.sum(gflops_vec)/r.shape[2]
     if args.use_gflops_loss:
         r_loss = torch.tensor(gflops_vec).cuda()
-#        r_loss = torch.tensor([uni_gflops, uni_gflops, uni_gflops,uni_gflops, uni_gflops, uni_gflops, uni_gflops]).cuda()[:r.shape[2]]
+     #   r_loss = torch.tensor(np.multiply(gflops_vec,[6,5,4,3,2,1])).cuda()
+     #    r_loss = torch.tensor([uni_gflops, uni_gflops, uni_gflops,uni_gflops, uni_gflops, uni_gflops, uni_gflops]).cuda()[:r.shape[2]]
     else:
         r_loss = torch.tensor([4., 2., 1., 0.5, 0.25]).cuda()[:r.shape[2]]
-    
-
-    loss = torch.sum(torch.mean(r, dim=[0, 1]) * r_loss)
+    b_, t_, c_ = r_.shape
+    r_last = (r_[:,:,-1] < 1).float()
+    r_last = r_last.unsqueeze(-1).expand(b_, t_, c_)
+    r_ = r_last * r_
+    loss = torch.sum(torch.mean(r_[:,:,:-1], dim=[0, 1]) * r_loss[1:])
+    #loss = torch.sum(torch.mean(r_, dim=[0, 1]) * r_loss)
     each_losses.append(loss.detach().cpu().item())
     
 
@@ -1235,6 +1248,8 @@ def compute_acc_eff_loss_with_weights(acc_loss, eff_loss, each_losses, epoch):
 def compute_every_losses(r, all_policy_r, acc_loss, epoch):
     if args.ada_depth_skip :
         eff_loss, each_losses = amd_cal_eff(r, all_policy_r)
+        
+        
     else:
         eff_loss, each_losses = cal_eff(r)
     acc_loss, eff_loss, each_losses = compute_acc_eff_loss_with_weights(acc_loss, eff_loss, each_losses, epoch)
@@ -1805,6 +1820,7 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
     
     accumulation_steps = args.repeat_batch
     total_loss = 0
+    total_runtime = 0
     with torch.no_grad():
         for i, input_tuple in enumerate(val_loader):
             #input_tuple = input_tuple[0]
@@ -1814,6 +1830,7 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
             input = input_tuple[0]
 
             # compute output
+
             if args.ada_reso_skip or args.ada_depth_skip:
                 if args.real_scsampler:
                     output, r, all_policy_r, real_pred, lite_pred = model(input=input_tuple[:-1 + meta_offset], tau=tau)
@@ -1822,6 +1839,7 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                     else:
                         acc_loss = get_criterion_loss(criterion, lite_pred.mean(dim=1), target)
                 else:
+                    start_runtime = time.time()
                     if args.save_meta and args.save_all_preds:
                         output, r, all_policy_r, all_preds = model(input=input_tuple[:-1 + meta_offset], tau=tau)
                     elif args.use_conf_btw_blocks or args.use_early_stop:
@@ -1829,7 +1847,8 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                     elif args.use_local_policy_module:
                         output, r, all_policy_r, base_outs, dual_policy_r, similarity_r = model(input=input_tuple[:-1 + meta_offset], tau=tau)
                     else:
-                        output, r, all_policy_r, feat_outs, base_outs, _ = model(input=input_tuple[:-1 + meta_offset], tau=tau)
+                        output, r, all_policy_r, feat_outs, base_outs = model(input=input_tuple[:-1 + meta_offset], tau=tau)
+                    total_runtime += (time.time() - start_runtime)
                     acc_loss = get_criterion_loss(criterion, output, target)
 
                 if use_ada_framework:
@@ -1927,7 +1946,7 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                 output = model(input=[input])
                 loss = get_criterion_loss(criterion, output, target)
                 
-            
+            print("avg_runtime:{0:.8f},  total_runtime:{1:.2f}, total = {2:d}".format(total_runtime/float(len(val_loader)),total_runtime,  len(val_loader)))
              # measure accuracy and record loss
             prec1, prec5 = accuracy(output.data, target[:, 0], topk=(1, 5))
             losses.update(loss.item(), input.size(0))
@@ -2191,6 +2210,504 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
         visual_log.close()
 
     return mAP, mmAP, top1.avg, usage_str if use_ada_framework else None, gflops
+
+
+def runtime_validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writer=None):
+    batch_time, losses, top1, top5 = get_average_meters(4)
+    tau = 0
+    # TODO(yue)
+    all_results = []
+    all_targets = []
+    all_local = {"TN":0, "FN":0, "FP":0, "TP":0}
+    all_all_preds = []
+
+    i_dont_need_bb = True
+
+    if args.visual_log != '':
+        try:
+            if not(os.path.isdir(args.visual_log)):
+               os.makedirs(ospj(args.visual_log))
+
+            visual_log_path = args.visual_log
+            if args.ada_depth_skip :
+                visual_log_txt_path = ospj(visual_log_path, "amd_visual_log.txt")
+            else:
+                visual_log_txt_path = ospj(visual_log_path, "visual_log.txt")
+            visual_log = open(visual_log_txt_path, "w")
+
+
+        except OSError as e:
+            if e.errno != errno.EEXIST:
+                print("Failed to create directory!!!")
+                raise
+                
+    if args.cnt_log != '':
+        try:
+            if not(os.path.isdir(args.cnt_log)):
+               os.makedirs(ospj(args.cnt_log))
+
+            cnt_log_path = args.cnt_log
+            if args.ada_depth_skip :
+                cnt_log_txt_path = ospj(cnt_log_path, "amd_cnt_log.txt")
+            else:
+                cnt_log_txt_path = ospj(cnt_log_path, "cnt_log.txt")
+            cnt_log = open(cnt_log_txt_path, "w")
+            input_result_dict = {}
+            total_cnt_dict = {}
+            target_dict = {}
+
+
+        except OSError as e:
+            if e.errno != errno.EEXIST:
+                print("Failed to create directory!!!")
+                raise
+
+    if use_ada_framework:
+        tau = get_current_temperature(epoch)
+        if args.use_early_stop:
+            if args.use_conf_btw_blocks:
+                alosses, elosses, inner_alosses, policy_gt_losses, es_gt_losses = get_average_meters(5)
+            else:
+                alosses, elosses, kld_losses, es_gt_losses = get_average_meters(4)
+        else:        
+            if args.use_conf_btw_blocks:
+                alosses, elosses, inner_alosses, policy_gt_losses, early_exit_losses = get_average_meters(5)
+            elif args.use_local_policy_module:
+                alosses, elosses, redundant_policy_losses, noisy_policy_losses = get_average_meters(4)
+            else: 
+                alosses, elosses, kld_losses = get_average_meters(3)
+                      
+            
+        kld_loss = 0
+        iter_list = args.backbone_list
+
+        if not i_dont_need_bb:
+            all_bb_results = [[] for _ in range(len(iter_list))]
+            if args.policy_also_backbone:
+                all_bb_results.append([])
+
+        each_terms = get_average_meters(NUM_LOSSES)
+        
+        r_list = []
+        if args.skip_twice:
+            skip_twice_r_list = [] 
+            
+        if args.save_meta:
+            name_list = []
+            indices_list = []
+
+    meta_offset = -2 if args.save_meta else 0
+
+    # switch to evaluate mode
+    model.eval()
+
+    end = time.time()
+    
+    accuracy_weight, efficiency_weight = update_weights(epoch, args.accuracy_weight, args.efficency_weight)
+
+    
+    accumulation_steps = args.repeat_batch
+    total_loss = 0
+    total_runtime = 0
+    total_used = 0
+    with torch.no_grad():
+        for i, input_tuple in enumerate(val_loader):
+            #input_tuple = input_tuple[0]
+            target = input_tuple[-1].cuda()
+#             local_target = input_tuple[2].cuda()
+#             pdb.set_trace()
+            input = input_tuple[0]
+
+            # compute output
+            if args.ada_reso_skip or args.ada_depth_skip:
+                if args.real_scsampler:
+                    output, r, all_policy_r, real_pred, lite_pred = model(input=input_tuple[:-1 + meta_offset], tau=tau)
+                    if args.sal_rank_loss:
+                        acc_loss = cal_sal_rank_loss(real_pred, lite_pred, target)
+                    else:
+                        acc_loss = get_criterion_loss(criterion, lite_pred.mean(dim=1), target)
+                else:
+                    start_runtime = time.time()
+                    if args.save_meta and args.save_all_preds:
+                        output, r, all_policy_r, all_preds = model(input=input_tuple[:-1 + meta_offset], tau=tau)
+                    elif args.use_conf_btw_blocks or args.use_early_stop:
+                        output, r, all_policy_r, feat_outs, early_stop_r, exit_r_t = model(input=input_tuple[:-1 + meta_offset], tau=tau)
+                    elif args.use_local_policy_module:
+                        output, r, all_policy_r, base_outs, dual_policy_r, similarity_r = model(input=input_tuple[:-1 + meta_offset], tau=tau)
+                    else:
+                        output, r, all_policy_r, feat_outs, base_outs = model(input=input_tuple[:-1 + meta_offset], tau=tau)
+                    total_runtime += (time.time() - start_runtime)
+                    acc_loss = get_criterion_loss(criterion, output, target)
+
+                if use_ada_framework:
+#                     acc_loss, eff_loss, each_losses = compute_every_losses(r, all_policy_r, acc_loss, epoch)
+#                     acc_loss = acc_loss/args.accuracy_weight * accuracy_weight
+#                     eff_loss = eff_loss/args.efficency_weight* efficiency_weight
+#                     if args.use_kld_loss:
+#                         kld_loss = args.accuracy_weight * get_criterion_loss(criterion, amd_cal_kld(output, r, base_outs), target)
+#                         kld_losses.update(kld_loss.item(), input.size(0))
+
+                    if args.use_conf_btw_blocks:
+#                         policy_gt_loss, inner_aloss= confidence_criterion_loss(criterion, all_policy_r, feat_outs, target)
+#                         policy_gt_loss, inner_aloss = guide_criterion_loss_selected(criterion, all_policy_r, feat_outs, target, output, epoch)
+
+#                         policy_gt_loss, inner_aloss= confidence_criterion_loss_selected(criterion, all_policy_r, feat_outs, target)
+
+#                         policy_gt_loss = efficiency_weight * policy_gt_loss
+#                         inner_aloss = accuracy_weight * inner_aloss
+                        eff_loss = torch.tensor(0.0).cuda()
+                        inner_aloss = torch.tensor(0.0).cuda()
+                        policy_gt_loss = torch.tensor(0.0).cuda()
+
+                        inner_alosses.update(inner_aloss.item(), input.size(0))
+                        policy_gt_losses.update(policy_gt_loss.item(), input.size(0))
+                        
+                    elif args.use_local_policy_module:
+                        redundant_policy_loss, noisy_policy_loss = dual_policy_criterion_loss(criterion, base_outs, target, dual_policy_r, similarity_r)
+                        redundant_policy_loss = redundant_policy_loss
+                        noisy_policy_loss = noisy_policy_loss
+
+                        redundant_policy_losses.update(redundant_policy_loss.item(), input.size(0))
+                        noisy_policy_losses.update(noisy_policy_loss.item(), input.size(0))
+                        
+                    if args.use_early_exit:
+                        early_exit_loss = early_exit_future_criterion_loss(criterion, exit_r_t, r, feat_outs, target)
+#                         early_exit_loss = efficiency_weight * early_exit_loss
+                        early_exit_losses.update(early_exit_loss.item(), input.size(0))
+                    
+                    if args.use_early_stop:
+                        early_stop_gt_loss = args.efficency_weight * early_stop_criterion_loss(criterion, all_policy_r, early_stop_r, feat_outs, target)
+                        es_gt_losses.update(early_stop_gt_loss.item(), input.size(0))
+                    
+                    if args.use_reinforce and not args.freeze_policy:
+                        if args.separated:
+                            acc_loss_items = []
+                            eff_loss_items = []
+                            for b_i in range(output.shape[0]):
+                                acc_loss_item = get_criterion_loss(criterion, output[b_i:b_i + 1],
+                                                                   target[b_i:b_i + 1])
+                                acc_loss_item, eff_loss_item, each_losses_item = compute_every_losses(r[b_i:b_i + 1],
+                                                                                                      acc_loss_item,
+                                                                                                      epoch)
+                                acc_loss_items.append(acc_loss_item)
+                                eff_loss_items.append(eff_loss_item)
+
+                            if args.no_baseline:
+                                b_acc = 0
+                                b_eff = 0
+                            else:
+                                b_acc = sum(acc_loss_items) / len(acc_loss_items)
+                                b_eff = sum(eff_loss_items) / len(eff_loss_items)
+
+                            log_p = torch.mean(r_log_prob, dim=1)
+                            acc_loss = 0
+                            eff_loss = 0
+                            for b_i in range(len(acc_loss_items)):
+                                acc_loss += -log_p[b_i] * (acc_loss_items[b_i] - b_acc)
+                                eff_loss += -log_p[b_i] * (eff_loss_items[b_i] - b_eff)
+                            acc_loss = acc_loss / len(acc_loss_items)
+                            eff_loss = eff_loss / len(eff_loss_items)
+                            each_losses = [0 * each_l for each_l in each_losses]
+                        else:
+                            sum_log_prob = torch.sum(r_log_prob) / r_log_prob.shape[0] / r_log_prob.shape[1]
+                            acc_loss = - sum_log_prob * acc_loss
+                            eff_loss = - sum_log_prob * eff_loss
+                            each_losses = [-sum_log_prob * each_l for each_l in each_losses]
+                    
+                    alosses.update(acc_loss.item(), input.size(0))
+                    elosses.update(eff_loss.item(), input.size(0))
+#                     for l_i, each_loss in enumerate(each_losses):
+#                         each_terms[l_i].update(each_loss, input.size(0))
+                if args.use_kld_loss:
+                    loss = acc_loss + eff_loss + kld_loss
+                elif args.use_conf_btw_blocks:
+                    loss = acc_loss + eff_loss + policy_gt_loss + inner_aloss
+#                     loss = acc_loss + eff_loss + inner_aloss
+
+#                     loss = acc_loss + policy_gt_loss 
+
+                    if args.use_early_exit:
+                        loss += early_exit_loss
+                else:
+#                     loss = acc_loss
+                    loss = acc_loss + eff_loss
+                    
+                if args.use_early_stop:
+                    loss = loss + early_stop_gt_loss
+            else:
+                start_runtime = time.time()
+
+                output, num_used_frame = model(input=[input])
+                loss = get_criterion_loss(criterion, output, target)
+                total_runtime += (time.time() - start_runtime)
+                total_used += num_used_frame
+
+            print("avg_runtime:{0:.8f},  total_runtime:{1:.2f}, num_of_used:{2:d}, total = {3:d}".format(total_runtime/float(len(val_loader)),total_runtime, total_used, len(val_loader)))
+             # measure accuracy and record loss
+            prec1, prec5 = accuracy(output.data, target[:, 0], topk=(1, 5))
+            losses.update(loss.item(), input.size(0))
+            top1.update(prec1.item(), input.size(0))
+            top5.update(prec5.item(), input.size(0))
+              
+            if args.cnt_log != '':
+                target_vals = target.cpu().numpy()
+                output_vals = output.max(dim=1)[1].cpu().numpy()
+                
+                for i in range(len(target_vals)):
+                    target_val = target_vals[i][0]
+                    output_val = output_vals[i]
+                    input_path = os.path.join(args.root_path, input_tuple[meta_offset-1][i])
+                    
+                    if input_path in input_result_dict:
+                        if target_val == output_val:
+                            input_result_dict[input_path] +=1
+                        total_cnt_dict[input_path] +=1
+                    else:
+                        input_result_dict[input_path] = 1 if target_val == output_val else 0
+                        total_cnt_dict[input_path] = 1
+                        target_dict[input_path] = output_val
+                   
+                
+            if args.visual_log != '':
+                target_val = target.cpu().numpy()[0][0]
+                output_val = output.max(dim=1)[1].cpu().numpy()[0]
+#                 loc_target_val = local_target.cpu().numpy()[0]
+#                 loc_output_val = r[:,:,-1].cpu().numpy()[0]
+                
+            
+                input_path_list = list()
+                image_tmpl='image_{:05d}.jpg'
+                for seg_ind in input_tuple[meta_offset][0]:
+                    input_path_list.append(os.path.join(args.root_path, input_tuple[meta_offset-1][0], image_tmpl.format(int(seg_ind))))
+
+              
+                
+                if target_val == output_val :
+                    print("True")
+                    visual_log.write("\nTrue")
+                else :
+                    print("False")
+                    visual_log.write("\nFalse")
+
+                print('input path list')
+                print(input_path_list[0])
+#                 print(input_path_list[0])
+#                 print(lambda x : x.cpu.numpy(), input_path_list[1:])
+                print('target')
+                print(target_val)
+                print('output')
+                print(output_val)
+                print('r')
+#                 print('loc_target')
+#                 print(loc_target_val)
+#                 print('loc_output')
+#                 print(loc_output_val)
+                
+                for i in range(1):
+                    print(reverse_onehot(r[i, :, :].cpu().numpy()))
+
+                #visual_log.write('\ninput path list: ')
+                for i in range(len(input_path_list)):
+                    visual_log.write('\n')
+                    visual_log.write(input_path_list[i])
+
+                visual_log.write('\n')
+                visual_log.write(str(target_val))
+                visual_log.write('\n')
+                visual_log.write(str(output_val))
+                visual_log.write('\n')
+#                 visual_log.write(str(loc_target_val))
+#                 visual_log.write('\n')
+#                 visual_log.write(str(loc_output_val))
+#                 visual_log.write('\n')
+
+                
+                for i in range(1):
+                    visual_log.writelines(str(reverse_onehot(r[i, :, :].cpu().numpy())))
+                visual_log.write('\n')
+
+            # TODO(yue)
+            all_results.append(output)
+            all_targets.append(target)
+#             total_loc = (local_target+2*r[:,:,-1]).cpu().numpy()# (0,1) + 2*(0,1) =? TN:0 FN:1 FP:2 TP:3
+#             all_local['TN'] += np.count_nonzero(total_loc == 0)
+#             all_local['FN'] += np.count_nonzero(total_loc == 1)
+#             all_local['FP'] += np.count_nonzero(total_loc == 2)
+#             all_local['TP'] += np.count_nonzero(total_loc == 3)
+            
+
+            
+            if not i_dont_need_bb:
+                for bb_i in range(len(all_bb_results)):
+                    all_bb_results[bb_i].append(base_outs[:, bb_i])
+
+            if args.save_meta and args.save_all_preds:
+                all_all_preds.append(all_preds)
+
+            # measure accuracy and record loss
+            prec1, prec5 = accuracy(output.data, target[:, 0], topk=(1, 5))
+
+            losses.update(loss.item(), input.size(0))
+            top1.update(prec1.item(), input.size(0))
+            top5.update(prec5.item(), input.size(0))
+
+            # measure elapsed time
+            batch_time.update(time.time() - end)
+            end = time.time()
+              
+            
+#             if use_ada_framework:
+#                 r_list.append(r.cpu().numpy())
+#                 if args.skip_twice:
+#                     skip_twice_r = all_policy_r[:,:,:,-2]
+#                     skip_twice_r_list.append(skip_twice_r.detach().cpu().numpy())
+
+#                 if args.save_meta:
+#                     name_list += input_tuple[-3]
+#                     indices_list.append(input_tuple[-2])
+
+            if i % args.print_freq == 0:
+                print_output = ('Test: [{0:03d}/{1:03d}] '
+                                'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
+                                'Loss {loss.val:.4f} ({loss.avg:.4f})'
+                                'Prec@1 {top1.val:.3f} ({top1.avg:.3f}) '
+                                'Prec@5 {top5.val:.3f} ({top5.avg:.3f})\t'.format(
+                    i, len(val_loader), batch_time=batch_time, loss=losses,
+                    top1=top1, top5=top5))
+
+#                 if use_ada_framework:
+#                     roh_r = reverse_onehot(r[-1, :, :].detach().cpu().numpy())
+#                     if args.skip_twice:
+#                         st_roh_r = reverse_onehot(skip_twice_r[-1, :, :].detach().cpu().numpy())
+#                         print_output += ' \n a_l {aloss.val:.4f} ({aloss.avg:.4f})\t e_l {eloss.val:.4f} ({eloss.avg:.4f})\t  r {r} st_r {st_r} pick {pick}'.format(
+#                             aloss=alosses, eloss=elosses, r=elastic_list_print(roh_r), st_r=elastic_list_print(st_roh_r), pick = np.count_nonzero(roh_r == len(args.block_rnn_list)+1)
+#                         )
+#                     elif args.use_kld_loss: 
+#                         print_output += '\n a_l {aloss.val:.4f} ({aloss.avg:.4f})\t e_l {eloss.val:.4f} ({eloss.avg:.4f})\t  k_l {kld_loss.val:.4f} ({kld_loss.avg:.4f})\t r {r} pick {pick}'.format(
+#                             aloss=alosses, eloss=elosses, kld_loss=kld_losses, r=elastic_list_print(roh_r), pick = np.count_nonzero(roh_r == len(args.block_rnn_list)+1)
+#                         )
+                    
+#                     elif args.use_conf_btw_blocks:
+#                         print_output += '\n a_l {aloss.val:.4f} ({aloss.avg:.4f})\t e_l {eloss.val:.4f} ({eloss.avg:.4f})\t  i_a_l {inner_aloss.val:.4f} ({inner_aloss.avg:.4f})\t  p_g_l {p_g_loss.val:.4f} ({p_g_loss.avg:.4f})\tr {r} pick {pick}'.format(aloss=alosses, eloss=elosses, inner_aloss=inner_alosses, p_g_loss=policy_gt_losses, r=elastic_list_print(roh_r), pick = np.count_nonzero(roh_r == len(args.block_rnn_list)+1)
+#                         )
+#                     elif args.use_local_policy_module:
+#                         print_output += '\n a_l {aloss.val:.4f} ({aloss.avg:.4f})\t e_l {eloss.val:.4f} ({eloss.avg:.4f})\t  r {r} pick {pick}'.format(
+#                             aloss=alosses, eloss=elosses, r=elastic_list_print(roh_r), pick = np.count_nonzero(roh_r == len(args.block_rnn_list)+1)
+#                         )
+
+#                         red_r = dual_policy_r[-1, :, -1, 0, 1].detach().cpu().numpy()
+#                         noi_r = dual_policy_r[-1, :, -1, 1, 1].detach().cpu().numpy()
+
+#                         print_output += '\n red_p_l {red_p_l.val:.4f} ({red_p_l.avg:.4f})\t' .format(
+#                             red_p_l = redundant_policy_losses
+#                         )
+#                         print_output += '\n noi_p_l {noi_p_l.val:.4f} ({noi_p_l.avg:.4f})\t' .format(
+#                             noi_p_l = noisy_policy_losses
+#                         )
+#                     else:
+#                         print_output += '\n a_l {aloss.val:.4f} ({aloss.avg:.4f})\t e_l {eloss.val:.4f} ({eloss.avg:.4f})\t  r {r} pick {pick}'.format(
+#                             aloss=alosses, eloss=elosses, r=elastic_list_print(roh_r), pick = np.count_nonzero(roh_r == len(args.block_rnn_list)+1)
+#                         )
+                        
+#                     if args.use_early_stop:
+#                         es_r = early_stop_r[-1,:,0].detach().cpu().numpy()
+#                         print_output += '\n es_g_l {es_g_loss.val:.4f} ({es_g_loss.avg:.4f}), es_r {es} \t' .format(
+#                             es_g_loss=es_gt_losses, es = np.nonzero(es_r)
+#                         )
+#                     if args.use_early_exit:
+#                         print_output += '\n e_x_l {e_x_loss.val:.4f} ({e_x_loss.avg:.4f}) \t' .format(
+#                             e_x_loss=early_exit_losses
+#                         )
+                    
+#                     #TN:0 FN:1 FP:2 TP:3
+#                     print_output += extra_each_loss_str(each_terms)
+#                     print_output += '\n location TP:{}, FP:{}, FN:{} ,TN: {} \t'.format(
+#                         all_local['TP'], all_local['FP'], all_local['FN'], all_local['TN']
+#                     )
+
+                print(print_output)
+
+    mAP, _ = cal_map(torch.cat(all_results, 0).cpu(),
+                     torch.cat(all_targets, 0)[:, 0:1].cpu())  # TODO(yue) single-label mAP
+    mmAP, _ = cal_map(torch.cat(all_results, 0).cpu(), torch.cat(all_targets, 0).cpu())  # TODO(yue)  multi-label mAP
+    print('Testing: mAP {mAP:.3f} mmAP {mmAP:.3f} Prec@1 {top1.avg:.3f} Prec@5 {top5.avg:.3f} Loss {loss.avg:.5f}'
+          .format(mAP=mAP, mmAP=mmAP, top1=top1, top5=top5, loss=losses))
+
+    wandb.log({"Test Loss" : losses.avg,
+        "Test mAP" : mAP,
+        "Test Prec@1" : top1.avg,
+        "Test Prec@5" : top5.avg })
+    
+    if not i_dont_need_bb:
+        bbmmaps = []
+        bbprec1s = []
+        all_targets_cpu = torch.cat(all_targets, 0).cpu()
+        for bb_i in range(len(all_bb_results)):
+            bb_results_cpu = torch.mean(torch.cat(all_bb_results[bb_i], 0), dim=1).cpu()
+            bb_i_mmAP, _ = cal_map(bb_results_cpu, all_targets_cpu)  # TODO(yue)  multi-label mAP
+            bbmmaps.append(bb_i_mmAP)
+
+            bbprec1, = accuracy(bb_results_cpu, all_targets_cpu[:, 0], topk=(1,))
+            bbprec1s.append(bbprec1)
+
+        print("bbmmAP: " + " ".join(["{0:.3f}".format(bb_i_mmAP) for bb_i_mmAP in bbmmaps]))
+        print("bb_Acc: " + " ".join(["{0:.3f}".format(bbprec1) for bbprec1 in bbprec1s]))
+    gflops = 0
+
+    
+    if use_ada_framework:
+        if args.ada_depth_skip :
+            if args.skip_twice :
+                usage_str, gflops = amd_get_policy_usage_str(r_list, skip_twice_r_list, len(args.block_rnn_list)+1)
+            else:
+                usage_str, gflops = amd_get_policy_usage_str(r_list, None, len(args.block_rnn_list)+1)
+
+        else:
+            usage_str, gflops = get_policy_usage_str(r_list, model.module.reso_dim)
+        print(usage_str)
+    
+#         if args.save_meta:  # TODO save name, label, r, result
+
+#             npa = np.concatenate(r_list)
+#             npb = np.stack(name_list)
+#             npc = torch.cat(all_results).cpu().numpy()
+#             npd = torch.cat(all_targets).cpu().numpy()
+#             if args.save_all_preds:
+#                 npe = torch.cat(all_all_preds).cpu().numpy()
+#             else:
+#                 npe = np.zeros(1)
+
+#             npf = torch.cat(indices_list).cpu().numpy()
+
+#             np.savez("%s/meta-val-%s.npy" % (exp_full_path, logger._timestr),
+#                      rs=npa, names=npb, results=npc, targets=npd, all_preds=npe, indices=npf)
+
+    if tf_writer is not None:
+        tf_writer.add_scalar('loss/test', losses.avg, epoch)
+        tf_writer.add_scalar('acc/test_top1', top1.avg, epoch)
+        tf_writer.add_scalar('acc/test_top5', top5.avg, epoch)
+
+    
+    if args.cnt_log != '':
+        for k,v in input_result_dict.items():
+            cnt_log.write(str(k))
+            cnt_log.write(',')
+            cnt_log.write(str(target_dict[k]))
+            cnt_log.write(',')
+            cnt_log.write(str(v))
+            cnt_log.write(',')
+            cnt_log.write(str(total_cnt_dict[k]))
+            cnt_log.write('\n')
+            
+            
+        cnt_log.close()
+    
+    if args.visual_log != '':
+        visual_log.close()
+
+    return mAP, mmAP, top1.avg, usage_str if use_ada_framework else None, gflops
+
+
 
 
 def save_checkpoint(state, is_best, exp_full_path, epoch):

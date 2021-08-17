@@ -176,7 +176,7 @@ class TSN_Amd(nn.Module):
             self.new_fc = make_a_linear(64, self.num_class)
         
         else:
-            self.new_fc = make_a_linear(feat_dim_of_res50_block['conv_5'], self.num_class)
+            self.new_fc = make_a_linear(feat_dim, self.num_class)
             
             
             
@@ -324,6 +324,16 @@ class TSN_Amd(nn.Module):
         ]
 
   
+    def single_block_cnn_backbone(self, name, input_data, the_base_model, signal=-1, indices_list=[], boost=False, b_t_c=False, **kwargs):
+        return the_base_model(input_data)
+
+    
+    def single_block_fc_backbone(self, name, input_data, new_fc, signal=-1, indices_list=[], boost=False, b_t_c=False,
+                 **kwargs):
+        
+        return new_fc(input_data).view(1, -1)
+       
+
     
     def block_cnn_backbone(self, name, input_data, the_base_model, signal=-1, indices_list=[], boost=False, b_t_c=False, **kwargs):
         if name is 'base':
@@ -365,11 +375,12 @@ class TSN_Amd(nn.Module):
     output: B, T*C, H', W'
     ex: depend on conv_name
     """
-    def pass_cnn_block(self, name, input_data):
+    def pass_cnn_block(self, name, input_data, single=False):
         if self.args.amd_freeze_backbone:
             with torch.no_grad():
                 return self.block_cnn_backbone(name, input_data, self.block_cnn_dict[name]) 
-
+        if single:
+            return self.single_block_cnn_backbone(name, input_data, self.block_cnn_dict[name]) 
         return self.block_cnn_backbone(name, input_data, self.block_cnn_dict[name]) 
                     
     def gate_fc_rnn_block_full(self, input_data_dict, tau):
@@ -458,18 +469,25 @@ class TSN_Amd(nn.Module):
 
     
     
-    def pass_last_fc_block(self, name, input_data):
-        if self.args.amd_freeze_backbone:
-            with torch.no_grad():
-                avgpool = torch.nn.AdaptiveAvgPool2d(output_size=(1, 1))
-                input_data = avgpool(input_data)
-                input_data = torch.nn.Dropout(p=self.dropout)(input_data).squeeze(-1).squeeze(-1)
-                return self.block_fc_backbone(name, input_data, self.new_fc) 
-        
-        avgpool = torch.nn.AdaptiveAvgPool2d(output_size=(1, 1))
-        input_data = avgpool(input_data)
-        input_data = torch.nn.Dropout(p=self.dropout)(input_data).squeeze(-1).squeeze(-1)
-        return self.block_fc_backbone(name, input_data, self.new_fc)
+    def pass_last_fc_block(self, name, input_data, single=False):
+        if single :
+            avgpool = torch.nn.AdaptiveAvgPool2d(output_size=(1, 1))
+            input_data = avgpool(input_data)
+            input_data = torch.nn.Dropout(p=self.dropout)(input_data).squeeze(-1).squeeze(-1)
+            return self.single_block_fc_backbone(name, input_data, self.new_fc)
+
+        else:
+            if self.args.amd_freeze_backbone:
+                with torch.no_grad():
+                    avgpool = torch.nn.AdaptiveAvgPool2d(output_size=(1, 1))
+                    input_data = avgpool(input_data)
+                    input_data = torch.nn.Dropout(p=self.dropout)(input_data).squeeze(-1).squeeze(-1)
+                    return self.block_fc_backbone(name, input_data, self.new_fc) 
+
+            avgpool = torch.nn.AdaptiveAvgPool2d(output_size=(1, 1))
+            input_data = avgpool(input_data)
+            input_data = torch.nn.Dropout(p=self.dropout)(input_data).squeeze(-1).squeeze(-1)
+            return self.block_fc_backbone(name, input_data, self.new_fc)
                     
     
     def pass_last_rnn_block(self, name, input_data, candidate):
@@ -539,6 +557,22 @@ class TSN_Amd(nn.Module):
    
     def late_fusion(self, base_out_list, in_matrix, out_matrix):
         return base_out_list
+    
+    def gate_fc_rnn_single(self, name, feat, tau, hx, cx):
+        rnn_input = self.single_block_fc_backbone(name, feat, self.block_fc_dict[name])
+        hx, cx = self.block_rnn_dict[name](rnn_input, (hx, cx))
+
+        feat_t = hx
+        p_t = torch.log(F.softmax(self.action_fc_dict[name](feat_t), dim=1).clamp(min=1e-8))
+        r_t = F.gumbel_softmax(p_t[0], tau, True) 
+        
+        return (r_t[1]>r_t[0]).float(), hx, cx
+        
+    def early_termination(self, feat, time_step):
+        if time_step > 5:
+            if torch.max(feat.squeeze(0)) > 0.999:
+                return True
+        return False
 
     def forward(self, *argv, **kwargs): 
         input_list = kwargs["input"]
@@ -571,6 +605,44 @@ class TSN_Amd(nn.Module):
             kwargs["tau"] = None
         tau = kwargs["tau"]
         feat_dict = {}
+        
+        selected_cnt = 0
+        pred_feat = torch.zeros([1,self.num_class]).cuda()
+        _b, _tc, _h, _w = _input.shape
+        _t, _c = _tc//3, 3
+        _input = _input.view(_b*_t, _c, _h, _w)
+        
+        hx_dict = {}
+        cx_dict = {}
+        for name in self.block_cnn_dict.keys():
+            hx_dict[name] = init_hidden(batch_size, self.args.hidden_dim)
+            cx_dict[name] = init_hidden(batch_size, self.args.hidden_dim)
+        
+        for t_i in range(self.time_steps):
+            select = True
+            _input_t = _input[t_i].unsqueeze(0)
+            for name in self.block_cnn_dict.keys():
+                _input_t = self.pass_cnn_block(name, _input_t, single=True)
+
+                r_t, hx_dict[name], cx_dict[name] = self.gate_fc_rnn_single(name, _input_t, tau, hx_dict[name], cx_dict[name])
+                if r_t == 0:
+                    select = False
+                    break
+#                 else:
+#                     hx_dict[name] = _hx
+#                     cx_dict[name] = _cx
+                    
+            if select:                
+                selected_cnt +=1
+                pred_feat += self.pass_last_fc_block('new_fc', _input_t, single=True)
+                output = pred_feat/selected_cnt
+#                 if self.early_termination(output, t_i): 
+#                     break
+        return output.squeeze(1), None, None, None, None, None #r_l_t[:,:,:,-1], all_policy_result_l_t, torch.stack(block_out_list, dim=2), return_supp, exit_r_t
+                
+        
+        
+        '''
         for name in self.block_cnn_dict.keys():
             # input image tensor with 224 size
             _input = self.pass_cnn_block(name, _input)
@@ -582,7 +654,7 @@ class TSN_Amd(nn.Module):
         if self.args.use_conf_btw_blocks:
             for i, name in enumerate(self.block_rnn_list):
                 block_out_list.append(self.pass_pred_block(name, hx_l_t[:,:,i,:]))
-
+        '''
             
         return_supp = None
         if self.args.amd_consensus_type == "avg":
@@ -651,7 +723,7 @@ class TSN_Amd(nn.Module):
                 early_stop_thr = 0.999
                 for b_i in range(batch_size):
                     max_i = self.time_steps
-                    early_stop_limit = 5
+                    early_stop_limit = 4
                     avg_block_out = 0
                     selected_frame_cnt = torch.tensor(0.0, dtype=torch.float)
                     output_class_dict = {}
@@ -730,7 +802,7 @@ class TSN_Amd(nn.Module):
                 modify_candidate_l_t = torch.stack(modify_candidate_list, dim=0) # B, T, K
                 r_l_t = modify_candidate_l_t.unsqueeze(-1) * r_l_t
               
-            output = self.amd_combine_logits(r_l_t[:,:,:,-1], block_out)
+            output = self.amd_combine_logits(r_l_t[:,:,-1,-1], block_out)
 #             output = self.fixed_amd_combine_logits(r_l_t, block_out)
             
 #             if not self.training:
@@ -785,24 +857,15 @@ class TSN_Amd(nn.Module):
         t_tensor = torch.sum(r_l, dim=[1, 2]).unsqueeze(-1).clamp(1)  # TODO sum T, K to count frame
         return (pred_tensor * r_tensor).sum(dim=[1, 2]) / t_tensor
 
-    def amd_combine_logits(self, r_, base_out):
+    def amd_combine_logits(self, r, base_out):
         # TODO r         N, T 
         # TODO base_out  N, T, C
         
         # voter_list N, T, 1
         batch_size = base_out.shape[0]
         pred_tensor = base_out
-        
-        '''
-        b_, t_, c_ = r_.shape
-        selected = (r_[:,:,-1] > 0).float()
-        selected = selected.unsqueeze(-1).expand(b_, t_, c_)
-        
-        r_ = selected * r_
-        r_tensor = torch.sum(r_, dim=[2]).unsqueeze(-1)/float(c_)
-        '''
-        
-        _r = r_[:,:,-1]
+
+        _r = r
         r_tensor = _r.unsqueeze(-1)
         t_tensor = torch.sum(_r, dim=[1]).unsqueeze(-1).clamp(1)  # TODO sum T, K to count frame
         

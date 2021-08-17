@@ -377,7 +377,8 @@ class TSN_Amd(nn.Module):
         sup2_return = None
        # input_data = input_data.detach()
         if name in self.block_rnn_dict.keys(): # gate activate = policy on 
-            base_out = self.block_fc_backbone(name, input_data, self.block_fc_dict[name])
+            bt_, c_, h_, w_ = input_data.shape
+            base_out = self.block_fc_backbone(name, input_data*candidate_list.unsqueeze(-1).view(-1,1).unsqueeze(-1).unsqueeze(-1).expand(-1, c_, h_, w_), self.block_fc_dict[name])
             if self.args.pe_at_rnn:
                 base_out = self.pos_encoding_dict[name](base_out)
             
@@ -533,7 +534,7 @@ class TSN_Amd(nn.Module):
                     take_bool =  old_r_t[:,-1].unsqueeze(-1) > 0.5
                     take_old_ = torch.tensor(~take_bool, dtype=torch.float).cuda()
                     take_curr_ = torch.tensor(take_bool, dtype=torch.float).cuda()
-                    r_t = old_r_t * take_old_ + r_t * take_curr_
+                    r_t = old_r_t * take_old + r_t * take_curr
                                         
                     check_to_store_bool = r_t[:,-1].unsqueeze(-1)>0.5
                     check_to_store = torch.tensor(check_to_store_bool, dtype=torch.float).cuda()
@@ -871,7 +872,7 @@ class TSN_Amd(nn.Module):
             
             
             t_tensor = t_tensor + torch.sum(voter, dim=[1]).unsqueeze(-1).clamp(1)
-        return (pred_tensor * r_tensor).sum(dim=[1]) / t_tensor
+        return (pred_tensor * r_tensor.detach().clone()).sum(dim=[1]) / t_tensor
 
         
         
