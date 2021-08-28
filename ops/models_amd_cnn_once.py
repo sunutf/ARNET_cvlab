@@ -38,6 +38,7 @@ class TSN_Amd(nn.Module):
         self.pretrain = pretrain
         self.reverese_try_cnt = 0
         self.fc_lr5 = fc_lr5
+        self.is_shift = True
 
         # TODO(yue)
         self.args = args
@@ -197,6 +198,12 @@ class TSN_Amd(nn.Module):
             model.last_layer_name = "_fc"
         else:
             model = getattr(torchvision.models, model_name)(shall_pretrain)
+            if self.is_shift:
+                print('Adding temporal shift...')
+                from ops.temporal_shift import make_temporal_shift
+                make_temporal_shift(model, self.num_segments,
+                                n_div=self.shift_div, place=self.shift_place, temporal_pool=self.temporal_pool)
+
             if "resnet" in model_name:
                 model.last_layer_name = 'fc'
             elif "mobilenet_v2" in model_name:
@@ -651,7 +658,7 @@ class TSN_Amd(nn.Module):
                 early_stop_thr = 0.999
                 for b_i in range(batch_size):
                     max_i = self.time_steps
-                    early_stop_limit = 5
+                    early_stop_limit = 8
                     avg_block_out = 0
                     selected_frame_cnt = torch.tensor(0.0, dtype=torch.float)
                     output_class_dict = {}
