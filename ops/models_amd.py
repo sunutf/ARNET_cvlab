@@ -3,7 +3,7 @@ from ops.basic_ops import ConsensusModule
 from ops.transforms import *
 from torch.nn.init import normal_, constant_
 import torch.nn.functional as F
-from efficientnet_pytorch import EfficientNet
+#from efficientnet_pytorch import EfficientNet
 from ops.net_flops_table import feat_dim_dict
 from ops.amd_net_flops_table import feat_dim_of_res50_block
 
@@ -378,7 +378,8 @@ class TSN_Amd(nn.Module):
        # input_data = input_data.detach()
         if name in self.block_rnn_dict.keys(): # gate activate = policy on 
             bt_, c_, h_, w_ = input_data.shape
-            base_out = self.block_fc_backbone(name, input_data*candidate_list.unsqueeze(-1).view(-1,1).unsqueeze(-1).unsqueeze(-1).expand(-1, c_, h_, w_), self.block_fc_dict[name])
+            #base_out = self.block_fc_backbone(name, input_data*candidate_list.unsqueeze(-1).view(-1,1).unsqueeze(-1).unsqueeze(-1).expand(-1, c_, h_, w_), self.block_fc_dict[name])
+            base_out = self.block_fc_backbone(name, input_data, self.block_fc_dict[name])
             if self.args.pe_at_rnn:
                 base_out = self.pos_encoding_dict[name](base_out)
             
@@ -514,7 +515,7 @@ class TSN_Amd(nn.Module):
                         
                     if self.args.use_conf_btw_blocks or self.args.use_local_policy_module:
                         raw_r_list.append(r_t)
-                    
+                    ''' 
                     if self.args.use_sim_first:
                         cossim = torch.nn.CosineSimilarity(dim=1, eps=1e-6)
                         avgpool = torch.nn.AdaptiveAvgPool2d(output_size=(1, 1))
@@ -528,7 +529,7 @@ class TSN_Amd(nn.Module):
                         take_curr_r = torch.tensor(sim_bool, dtype=torch.float).cuda()
                         skip_dummy_r_t = torch.cat([torch.ones(batch_size,1), torch.zeros(batch_size, 1)], 1).cuda() #B, A
                         r_t =  take_skip_r * skip_dummy_r_t + take_curr_r * r_t                        
-                        
+                    '''  
                     take_old = old_r_t[:,-2].unsqueeze(-1)
                     take_curr = old_r_t[:,-1].unsqueeze(-1)
                     take_bool =  old_r_t[:,-1].unsqueeze(-1) > 0.5
@@ -724,6 +725,7 @@ class TSN_Amd(nn.Module):
                 if self.args.voting_policy:
                     voter_list = torch.zeros(batch_size, self.time_steps, 1, dtype=torch.float).cuda() #B, T, 1
                     _candidate_list, voter_list, _ = self.gate_fc_rnn_block(name, _input, candidate_list, tau, voter_list)
+                   
 
                 # update candidate_list based on policy rnn
                 elif self.args.use_local_policy_module:
@@ -732,8 +734,19 @@ class TSN_Amd(nn.Module):
                     all_dual_policy_result_list.append(raw_dual_r_list)
                     all_similarity_list.append(similarity_list)
                 else :
-                    _candidate_list, hx_list, raw_r_list = self.gate_fc_rnn_block(name, _input, candidate_list, tau, None)
-
+                    _candidate_list, hx_list, raw_r_list = self.gate_fc_rnn_block(name, _input.detach().clone(), candidate_list, tau, None)
+                    _, _c, _h, _w = _input.shape
+                    '''
+                    take_bool = _candidate_list[:,:,-1].unsqueeze(-1) > 0.5
+                    take_curr = torch.tensor(take_bool, dtype=torch.float).cuda()
+                    take_old = torch.tensor(~take_bool, dtype=torch.float).cuda()
+                    _input = _input*((_candidate_list*take_curr + take_old)[:,:,-1].view(-1,1).unsqueeze(-1).unsqueeze(-1).expand(-1,_c,_h,_w))
+                    '''
+                    take_bool = _candidate_list[:,:,-1] > 0.5
+                    take_curr = torch.tensor(take_bool, dtype=torch.float).cuda()
+                    take_old = torch.tensor(~take_bool, dtype=torch.float).cuda()
+                    _input = _input*((_candidate_list[...,-1]*take_curr + _candidate_list[...,0]*take_old).view(-1,1).unsqueeze(-1).unsqueeze(-1).expand(-1,_c,_h,_w))
+                
                 if self.args.use_distil_loss_to_rnn :
                     skip_new_list = (candidate_list[:,:,-1] - _candidate_list[:,:,-1]).cuda()
                     skip_result_list.append(skip_new_list)
@@ -839,7 +852,7 @@ class TSN_Amd(nn.Module):
             return output.squeeze(1), candidate_log_list, torch.stack(all_policy_result_list, dim=2), block_out, torch.stack(all_dual_policy_result_list, dim=2), torch.stack(all_similarity_list, dim=2)
        
         else:
-            return output.squeeze(1), candidate_log_list, None, None, block_out
+            return output.squeeze(1), candidate_log_list, None, None, block_out, None
             
     def amd_distil_combine_logits(self, r_l, base_out_l):
         # r_l        B, T, K, 
