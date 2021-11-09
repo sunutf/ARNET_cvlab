@@ -38,10 +38,12 @@ class TSN_Amd(nn.Module):
         self.pretrain = pretrain
         self.reverese_try_cnt = 0
         self.fc_lr5 = fc_lr5
-
+        self.is_shift = False
+        
         # TODO(yue)
         self.args = args
         self.rescale_to = args.rescale_to
+        self.batch_size = self.args.batch_size
         if self.args.ada_reso_skip:
             base_model = self.args.backbone_list[0] if len(self.args.backbone_list) >= 1 else None
         self.base_model_name = base_model
@@ -61,7 +63,7 @@ class TSN_Amd(nn.Module):
             self._extends_to_multi_models()
             self._prepare_fc(num_class)          #return self.new_fc
 
-            
+                    
         if self.args.ada_depth_skip:
             self.block_cnn_dict   = nn.ModuleDict()
             self.block_rnn_dict   = nn.ModuleDict()
@@ -83,9 +85,11 @@ class TSN_Amd(nn.Module):
                 
             if self.args.use_local_policy_module:
                 self.local_policy_dict = nn.ModuleDict()
-            
+
+
             
             self.resolution_list = self.args.resolution_list
+            self.resolution_avgpool_l = {}
             self.block_rnn_list = self.args.block_rnn_list
             
             if self.args.skip_twice:
@@ -97,7 +101,8 @@ class TSN_Amd(nn.Module):
             self._split_base_cnn_to_block(self.base_model)
             self._prepare_policy_block(self.base_model)
             self._prepare_pos_encoding()
-            
+            self._prepare_resolution_avgpool_layer()
+
         if not self.before_softmax:
             self.softmax = nn.Softmax()
 
@@ -107,6 +112,10 @@ class TSN_Amd(nn.Module):
             
         if self.use_transformer:
             self.transformer = TransformerModel()
+
+    def _prepare_resolution_avgpool_layer(self):
+        for reso in self.resolution_list:
+            self.resolution_avgpool_l[reso] = nn.AdaptiveAvgPool2d(int(reso))
 
     def _split_base_cnn_to_block(self, _model):
         self.block_cnn_dict['base']   = torch.nn.Sequential(*(list(_model.children())[:4]))
@@ -176,7 +185,7 @@ class TSN_Amd(nn.Module):
             self.new_fc = make_a_linear(64, self.num_class)
         
         else:
-            self.new_fc = make_a_linear(feat_dim, self.num_class)
+            self.new_fc = make_a_linear(feat_dim_of_res50_block['conv_5'], self.num_class)
             
             
             
@@ -197,6 +206,12 @@ class TSN_Amd(nn.Module):
             model.last_layer_name = "_fc"
         else:
             model = getattr(torchvision.models, model_name)(shall_pretrain)
+            if self.is_shift:
+                print('Adding temporal shift...')
+                from ops.temporal_shift import make_temporal_shift
+                make_temporal_shift(model, self.num_segments,
+                                n_div=self.shift_div, place=self.shift_place, temporal_pool=self.temporal_pool)
+
             if "resnet" in model_name:
                 model.last_layer_name = 'fc'
             elif "mobilenet_v2" in model_name:
@@ -324,16 +339,6 @@ class TSN_Amd(nn.Module):
         ]
 
   
-    def single_block_cnn_backbone(self, name, input_data, the_base_model, signal=-1, indices_list=[], boost=False, b_t_c=False, **kwargs):
-        return the_base_model(input_data)
-
-    
-    def single_block_fc_backbone(self, name, input_data, new_fc, signal=-1, indices_list=[], boost=False, b_t_c=False,
-                 **kwargs):
-        
-        return new_fc(input_data).view(1, -1)
-       
-
     
     def block_cnn_backbone(self, name, input_data, the_base_model, signal=-1, indices_list=[], boost=False, b_t_c=False, **kwargs):
         if name is 'base':
@@ -343,7 +348,8 @@ class TSN_Amd(nn.Module):
             if b_t_c:
                 input_b_t_c = input_data.view(_b, _t, _c, _h, _w)
             else:
-                input_2d = input_data.view(_b * _t, _c, _h, _w)  
+                input_2d = input_data.view(_b * _t, _c, _h, _w)
+
 
             if b_t_c:
                 feat = the_base_model(input_b_t_c, signal=signal, **kwargs)
@@ -375,12 +381,11 @@ class TSN_Amd(nn.Module):
     output: B, T*C, H', W'
     ex: depend on conv_name
     """
-    def pass_cnn_block(self, name, input_data, single=False):
+    def pass_cnn_block(self, name, input_data):
         if self.args.amd_freeze_backbone:
             with torch.no_grad():
                 return self.block_cnn_backbone(name, input_data, self.block_cnn_dict[name]) 
-        if single:
-            return self.single_block_cnn_backbone(name, input_data, self.block_cnn_dict[name]) 
+
         return self.block_cnn_backbone(name, input_data, self.block_cnn_dict[name]) 
                     
     def gate_fc_rnn_block_full(self, input_data_dict, tau):
@@ -388,35 +393,71 @@ class TSN_Amd(nn.Module):
         all_r_list = []
         hx_list = []
         raw_r_list = []
-
-        
+        reso_r_list = []
+        ''' 
+        input_data_dict = {}
+        for key in _input_data_dict.keys():
+            input_data_dict[key] = _input_data_dict[key].detach().clone()
+        '''
         sup_return = None
         sup2_return = None
         # input_data = input_data.detach()
-
-        base_out_dict = {}
+        
+        reso_l = self.resolution_list
+        reso_dim = len(reso_l)
+        reso_base_out_dict = {}
         for name in self.block_rnn_dict:
-            input_data = input_data_dict[name]
-            base_out_dict[name] = self.block_fc_backbone(name, input_data, self.block_fc_dict[name])
-        batch_size = base_out_dict[name].shape[0]
+            base_out_l = []
+            for reso in self.resolution_list:
+                input_data = input_data_dict[reso][name]
+                base_out_l.append(self.block_fc_backbone(name, input_data, self.block_fc_dict[name]))
+            reso_base_out_dict[name] = torch.stack(base_out_l, dim=1)  #K * B,Reso,T,C 
+            #reso_base_out_l.append(torch.stack(base_out_l, dim=-1)) #B,T,C * K
+
+        #reso_base_out_t = torch.stack(reso_base_out_l, dim=2) #B,T, Reso, C,K
+        _bt, _c, _h, _w = input_data_dict[self.resolution_list[-1]]["base"].shape
+        _b, _t = _bt // self.time_steps, self.time_steps
+        batch_size = _b
+        
         
         hx_l_t = init_hidden(batch_size, self.args.hidden_dim).unsqueeze(1).repeat(1, len(self.block_rnn_dict.keys()), 1) 
         cx_l_t = init_hidden(batch_size, self.args.hidden_dim).unsqueeze(1).repeat(1, len(self.block_rnn_dict.keys()), 1)
         num_of_policy = len(self.block_rnn_dict.keys())
         per_time_r_list = []
         
+
+
         raw_hx_list = []
         exit_r_list = []
-        for t in range(self.time_steps):
+        reso_r_list = []
+        
+        reso_r = torch.zeros(batch_size, len(self.resolution_list)).cuda()
+        reso_r[..., 0] = 1.0
+    
+        init_reso_r = reso_r.detach().clone()
+        for t_i in range(self.time_steps):
+            
             old_r_t = torch.cat([torch.zeros(batch_size, 1), torch.ones(batch_size, 1)], 1).cuda()
             local_hx_list = []
             local_cx_list = []
             per_time_r_list.append(old_r_t)
+            
+    
+            reso_r_list.append(reso_r)
+                #_base_out = torch.mean(reso_base_out_t[:,t,...] * reso_r.unsqueeze(-1).unsqueeze(-1), 1) #B, C, K
             for i, name in enumerate(self.block_rnn_dict.keys()):
-                _bt, _c, _h, _w = input_data_dict[name].shape
-                _b, _t = _bt // self.time_steps, self.time_steps
-
-                rnn_input = base_out_dict[name][:, t]
+                
+                
+                _base_out_l = []
+                base_out = torch.sum(reso_base_out_dict[name][:,:,t_i,:] * reso_r.unsqueeze(-1), 1) #B, C
+#                 for b_i in range(batch_size):
+#                     reso_idx = reso_r[b_i].detach().cpu().tolist().index(1.0)
+#                     breakpoint()
+#                     _base_out_l.append(reso_base_out_l[reso_idx][i][b_i, t_i]) #B * C
+                    
+#                 rnn_input = torch.stack(_base_out_l, dim=0).cuda() #B, C
+                
+                rnn_input = base_out
                 hx = hx_l_t[:,i]
                 cx = cx_l_t[:,i]
 #                 hx = self.block_rnn2fc_dict[name](rnn_input)
@@ -439,19 +480,42 @@ class TSN_Amd(nn.Module):
                     exit_r_list.append(exit_r)
 
                 take_bool =  old_r_t[:,-1].unsqueeze(-1) > 0.5
-                take_old_ = old_r_t[:,-2].unsqueeze(-1)
-                take_curr_ = old_r_t[:,-1].unsqueeze(-1)
+                #take_old = old_r_t[:,-2].unsqueeze(-1)
+                #take_curr = old_r_t[:,-1].unsqueeze(-1)
                 take_old = torch.tensor(~take_bool, dtype=torch.float).cuda()
                 take_curr = torch.tensor(take_bool, dtype=torch.float).cuda()
                 r_t = old_r_t * take_old + r_t * take_curr
                 old_r_t = r_t
-#                 _r_t = old_r_t * take_old + r_t * take_curr
-#                 old_r_t = _r_t
-    
+                #_r_t = old_r_t * take_old + r_t * take_curr
+                #old_r_t = _r_t
+                
+
                 per_time_r_list.append(r_t)  
                 local_hx_list.append(hx)
                 local_cx_list.append(cx)
-                
+            
+            select_bool = (r_t[:,-1].unsqueeze(-1) > 0.5).expand(-1, len(self.resolution_list))#B,K
+            take_reset = torch.tensor(select_bool, dtype=torch.float).cuda()
+            take_up = torch.tensor(~select_bool, dtype=torch.float).cuda()
+            
+            shift_r = take_up * reso_r #B,K
+            _shift_r = shift_r.detach().clone()
+            for i in range(reso_dim-2, -1, -1):
+                if i == reso_dim-2:
+                    shift_r[:,i+1] += shift_r[:,i]
+                    shift_r[:,i+1] = torch.tensor(shift_r[:,i+1] > 0.5, dtype=torch.float).cuda()
+                else:    
+                    shift_r[:,i+1] = shift_r[:,i] 
+            shift_r[:,0] = 0.0 
+            reso_r = take_reset * init_reso_r + shift_r
+            
+            '''
+            print("++++++++++++++++")
+            print(take_reset)
+            print(_shift_r)
+            print(shift_r)
+            print(reso_r)
+            '''
             hx_l_t = take_old.unsqueeze(-1) * hx_l_t + take_curr.unsqueeze(-1) * torch.stack(local_hx_list, dim=1)
             cx_l_t = take_old.unsqueeze(-1) * cx_l_t + take_curr.unsqueeze(-1) * torch.stack(local_cx_list, dim=1)
             
@@ -465,29 +529,22 @@ class TSN_Amd(nn.Module):
             exit_r_t = torch.stack(exit_r_list, dim=0).view(_b, _t, num_of_policy)
             return r_list, sup_return, sup2_return, exit_r_t
                
-        return r_list, sup_return, sup2_return, None
+        return r_list, sup_return, sup2_return, torch.stack(reso_r_list, dim=1)#B,T,K
 
     
     
-    def pass_last_fc_block(self, name, input_data, single=False):
-        if single :
-            avgpool = torch.nn.AdaptiveAvgPool2d(output_size=(1, 1))
-            input_data = avgpool(input_data)
-            input_data = torch.nn.Dropout(p=self.dropout)(input_data).squeeze(-1).squeeze(-1)
-            return self.single_block_fc_backbone(name, input_data, self.new_fc)
-
-        else:
-            if self.args.amd_freeze_backbone:
-                with torch.no_grad():
-                    avgpool = torch.nn.AdaptiveAvgPool2d(output_size=(1, 1))
-                    input_data = avgpool(input_data)
-                    input_data = torch.nn.Dropout(p=self.dropout)(input_data).squeeze(-1).squeeze(-1)
-                    return self.block_fc_backbone(name, input_data, self.new_fc) 
-
-            avgpool = torch.nn.AdaptiveAvgPool2d(output_size=(1, 1))
-            input_data = avgpool(input_data)
-            input_data = torch.nn.Dropout(p=self.dropout)(input_data).squeeze(-1).squeeze(-1)
-            return self.block_fc_backbone(name, input_data, self.new_fc)
+    def pass_last_fc_block(self, name, input_data):
+        if self.args.amd_freeze_backbone:
+            with torch.no_grad():
+                avgpool = torch.nn.AdaptiveAvgPool2d(output_size=(1, 1))
+                input_data = avgpool(input_data)
+                input_data = torch.nn.Dropout(p=self.dropout)(input_data).squeeze(-1).squeeze(-1)
+                return self.block_fc_backbone(name, input_data, self.new_fc) 
+        
+        avgpool = torch.nn.AdaptiveAvgPool2d(output_size=(1, 1))
+        input_data = avgpool(input_data)
+        input_data = torch.nn.Dropout(p=self.dropout)(input_data).squeeze(-1).squeeze(-1)
+        return self.block_fc_backbone(name, input_data, self.new_fc)
                     
     
     def pass_last_rnn_block(self, name, input_data, candidate):
@@ -557,22 +614,6 @@ class TSN_Amd(nn.Module):
    
     def late_fusion(self, base_out_list, in_matrix, out_matrix):
         return base_out_list
-    
-    def gate_fc_rnn_single(self, name, feat, tau, hx, cx):
-        rnn_input = self.single_block_fc_backbone(name, feat, self.block_fc_dict[name])
-        hx, cx = self.block_rnn_dict[name](rnn_input, (hx, cx))
-
-        feat_t = hx
-        p_t = torch.log(F.softmax(self.action_fc_dict[name](feat_t), dim=1).clamp(min=1e-8))
-        r_t = F.gumbel_softmax(p_t[0], tau, True) 
-        
-        return (r_t[1]>r_t[0]).float(), hx, cx
-        
-    def early_termination(self, feat, time_step):
-        if time_step > 18:
-            if torch.max(feat.squeeze(0)) > 0.9999:
-                return True
-        return False
 
     def forward(self, *argv, **kwargs): 
         input_list = kwargs["input"]
@@ -590,6 +631,7 @@ class TSN_Amd(nn.Module):
 
         candidate_log_list = []
         all_policy_result_list = []
+        skip_result_list = []
         all_dual_policy_result_list = []
         all_similarity_list = []
         block_out_list = []
@@ -603,76 +645,24 @@ class TSN_Amd(nn.Module):
         if "tau" not in kwargs:
             kwargs["tau"] = None
         tau = kwargs["tau"]
-        feat_dict = {}
-        
-        
-        selected_cnt = 0
-        pred_feat = torch.zeros([1,self.num_class]).cuda()
-        _b, _tc, _h, _w = _input.shape
-        _t, _c = _tc//3, 3
-        _input = _input.view(_b*_t, _c, _h, _w)
-        policy_r_l = torch.cat([torch.ones(_b, _t, 1),torch.zeros(_b, _t, len(self.block_cnn_dict.keys()))], dim=2).cuda()
-        
-        hx_dict = {}
-        cx_dict = {}
-        for name in self.block_cnn_dict.keys():
-            hx_dict[name] = init_hidden(batch_size, self.args.hidden_dim)
-            cx_dict[name] = init_hidden(batch_size, self.args.hidden_dim)
-        
-        reso_last_idx = len(self.resolution_list)-1
-        reso_i = 0#reso_last_idx
-        resize_layer_l = []
-        reso_results = torch.zeros(_b,_t, len(self.resolution_list)).cuda()
+        reso_feat_dict = {}
         for reso in self.resolution_list:
-            resize_layer_l.append(nn.AdaptiveAvgPool2d(int(reso)))
-        
-        for t_i in range(self.time_steps):
-            select = True
-            _input_t = _input[t_i].unsqueeze(0)
-            _input_t = resize_layer_l[reso_i](_input_t)
-            s_i = 1
-            reso_results[0,t_i,reso_i] = 1.0
+            feat_dict = {}
+            local_input = self.resolution_avgpool_l[reso](_input)
             for name in self.block_cnn_dict.keys():
+                # input image tensor with 224 size
                 
-                _input_t = self.pass_cnn_block(name, _input_t, single=True)
-
-                r_t, hx_dict[name], cx_dict[name] = self.gate_fc_rnn_single(name, _input_t, tau, hx_dict[name], cx_dict[name])
-                #r_t, _hx, _cx = self.gate_fc_rnn_single(name, _input_t, tau, hx_dict[name], cx_dict[name])
-                if r_t == 0:
-                    select = False
-                    #reso_i = reso_last_idx
-                    reso_i = min(reso_last_idx, reso_i+1)
-                    break
-                else :
-                    policy_r_l[0,t_i,s_i] = 1.0
-                    #hx_dict[name] = _hx
-                    #cx_dict[name] = _cx
-                s_i += 1
-                    
-            if select:                
-                selected_cnt +=1
-                reso_i = 0#max(0, reso_i -1)
-                pred_feat += self.pass_last_fc_block('new_fc', _input_t, single=True)
-                output = pred_feat/selected_cnt
-                if self.args.early_termination and self.early_termination(output, t_i): 
-                    break
-        return output.squeeze(1), policy_r_l, None, None, None, reso_results #r_l_t[:,:,:,-1], all_policy_result_l_t, torch.stack(block_out_list, dim=2), return_supp, exit_r_t
-                
-        
-        
-        '''
-        for name in self.block_cnn_dict.keys():
-            # input image tensor with 224 size
-            _input = self.pass_cnn_block(name, _input)
-            feat_dict[name] = _input
+                local_input = self.pass_cnn_block(name, local_input)
+                feat_dict[name] = local_input
+            reso_feat_dict[reso] = feat_dict
         
         #B,T,K,2/  B,T,K,feat/ B,T,K,2
-        r_l_t, hx_l_t, all_policy_result_l_t, exit_r_t = self.gate_fc_rnn_block_full(feat_dict, tau) 
+        r_l_t, hx_l_t, all_policy_result_l_t, reso_r_t = self.gate_fc_rnn_block_full(reso_feat_dict, tau) 
                 
         if self.args.use_conf_btw_blocks:
             for i, name in enumerate(self.block_rnn_list):
                 block_out_list.append(self.pass_pred_block(name, hx_l_t[:,:,i,:]))
-        '''
+
             
         return_supp = None
         if self.args.amd_consensus_type == "avg":
@@ -701,7 +691,7 @@ class TSN_Amd(nn.Module):
 #                     boundary_start = False
 #                     for t_i in range(self.time_steps):
 #                         avg_block_out += selected_block_outs[b_i, t_i, :]
-#                         is_selected = r_l_t[b_i,t_i,-1,-1] > 0.5
+#                         hs_selected = r_l_t[b_i,t_i,-1,-1] > 0.5
 #                         if is_selected: 
 #                             selected_frame_cnt +=1
 #                             output_base_out = F.softmax(avg_block_out/selected_frame_cnt, dim=-1)
@@ -741,7 +731,7 @@ class TSN_Amd(nn.Module):
                 early_stop_thr = 0.999
                 for b_i in range(batch_size):
                     max_i = self.time_steps
-                    early_stop_limit = 4
+                    early_stop_limit = 8
                     avg_block_out = 0
                     selected_frame_cnt = torch.tensor(0.0, dtype=torch.float)
                     output_class_dict = {}
@@ -820,7 +810,7 @@ class TSN_Amd(nn.Module):
                 modify_candidate_l_t = torch.stack(modify_candidate_list, dim=0) # B, T, K
                 r_l_t = modify_candidate_l_t.unsqueeze(-1) * r_l_t
               
-            output = self.amd_combine_logits(r_l_t[:,:,-1,-1], block_out)
+            output = self.amd_combine_logits(r_l_t[:,:,:,-1], block_out)
 #             output = self.fixed_amd_combine_logits(r_l_t, block_out)
             
 #             if not self.training:
@@ -859,11 +849,11 @@ class TSN_Amd(nn.Module):
         elif self.args.amd_consensus_type == "lstm":
             block_out = None
             output = self.pass_last_rnn_block('new_fc', feat_dict[list(self.block_cnn_dict.keys())[-1]], r_l_t[:,:,-1,-1])
-        
-        if self.args.use_conf_btw_blocks or self.args.use_early_stop :
-            return output.squeeze(1), r_l_t[:,:,:,-1], all_policy_result_l_t, torch.stack(block_out_list, dim=2), return_supp, exit_r_t
+         
+        if self.args.use_conf_btw_blocks :
+            return output.squeeze(1), r_l_t[:,:,:,-1], all_policy_result_l_t, torch.stack(block_out_list, dim=2), return_supp, reso_r_t
         else:
-            return output.squeeze(1), r_l_t[:,:,:,-1], None, None, block_out, exit_r_t
+            return output.squeeze(1), r_l_t[:,:,:,-1], None, None, block_out, reso_r_t
             
     def amd_distil_combine_logits(self, r_l, base_out_l):
         # r_l        B, T, A, 
@@ -875,15 +865,24 @@ class TSN_Amd(nn.Module):
         t_tensor = torch.sum(r_l, dim=[1, 2]).unsqueeze(-1).clamp(1)  # TODO sum T, K to count frame
         return (pred_tensor * r_tensor).sum(dim=[1, 2]) / t_tensor
 
-    def amd_combine_logits(self, r, base_out):
+    def amd_combine_logits(self, r_, base_out):
         # TODO r         N, T 
         # TODO base_out  N, T, C
         
         # voter_list N, T, 1
         batch_size = base_out.shape[0]
         pred_tensor = base_out
-
-        _r = r
+        
+        '''
+        b_, t_, c_ = r_.shape
+        selected = (r_[:,:,-1] > 0).float()
+        selected = selected.unsqueeze(-1).expand(b_, t_, c_)
+        
+        r_ = selected * r_
+        r_tensor = torch.sum(r_, dim=[2]).unsqueeze(-1)/float(c_)
+        '''
+        
+        _r = r_[:,:,-1]
         r_tensor = _r.unsqueeze(-1)
         t_tensor = torch.sum(_r, dim=[1]).unsqueeze(-1).clamp(1)  # TODO sum T, K to count frame
         

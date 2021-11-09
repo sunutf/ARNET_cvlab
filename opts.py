@@ -2,7 +2,7 @@ import argparse
 
 parser = argparse.ArgumentParser(description="PyTorch implementation of Temporal Segment Networks")
 parser.add_argument('dataset', type=str)
-parser.add_argument('modality', type=str, choices=['RGB', 'Flow'])
+parser.add_argument('modality', type=str, choices=['RGB', 'Flow'], default="RGB")
 parser.add_argument('--train_list', type=str, default="")
 parser.add_argument('--val_list', type=str, default="")
 parser.add_argument('--root_path', type=str, default="")
@@ -80,6 +80,7 @@ parser.add_argument('--show_pred', action='store_true')
 parser.add_argument('--routing_weight', default=0., type=float)
 parser.add_argument('--ada_depth_skip', action='store_true', help='adaptively select depth of model')
 parser.add_argument('--block_rnn_list', default=['conv_2'], type=str, nargs='+', help='adaptively select depth of model')
+parser.add_argument('--resolution_list', default=[], type=str, nargs='+', help='adaptively select depth of model')
 parser.add_argument('--pe_at_rnn', action='store_true', help='position encoding activate at rnn')
 parser.add_argument('--amd_freeze_backbone', action='store_true', help='freeze backbone')
 parser.add_argument('--voting_policy', action='store_true', help='voting activate')
@@ -102,6 +103,8 @@ parser.add_argument('--use_early_exit_inf', action='store_true', help='early_exi
 parser.add_argument('--avg_before_cls', action='store_true', help='avg_before_cls')
 parser.add_argument('--use_stoch_select', action='store_true', help='use_stoch_select')
 parser.add_argument('--use_early_stop_mean_inf', action='store_true', help='use_early_stop_mean_inf')
+parser.add_argument('--runtime', action='store_true', help='measuring runtime')
+parser.add_argument('--early_termination', action='store_true', help='early termination')
 
 
 
