@@ -203,20 +203,19 @@ def main():
         if len(args.ada_crop_list) == 0:
             args.ada_crop_list = [1 for _ in args.reso_list]
 
-    if use_ada_framework:
-        if args.ada_reso_skip :
-            init_gflops_table()
-        elif args.ada_depth_skip:
-            amd_init_gflops_table()
+        
 
     if args.ada_depth_skip:
         if args.runtime:
             from ops.models_amd_runtime import TSN_Amd
-        elif args.resolution_list :
+        elif len(args.resolution_list) != 0 :
+            print("reso")
             from ops.models_amd_cnn_once_reso import TSN_Amd
         else:
+            print("ordinary")
             from ops.models_amd_cnn_once import TSN_Amd
-
+        
+        amd_init_gflops_table()
         model = TSN_Amd(num_class, args.num_segments,
                     base_model=args.arch,
                     consensus_type=args.consensus_type,
@@ -228,6 +227,7 @@ def main():
 
     
     else:
+        init_gflops_table()
         model = TSN_Ada(num_class, args.num_segments,
                         base_model=args.arch,
                         consensus_type=args.consensus_type,
@@ -585,7 +585,9 @@ def amd_init_gflops_table():
     default_gflops_table = {}
     seg_len = -1
     resolution = args.rescale_to
-    resol_list = args.resolution_list    
+    resol_list = args.resolution_list
+    if len(resol_list) == 0 :
+        resol_list.append(str(resolution))
     for resol in resol_list:
         _gflops_table = {}
         _default_gflops_table = {}
@@ -2102,7 +2104,10 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
             
             if use_ada_framework:
                 r_list.append(r.cpu().numpy())
-                reso_r_list.append(reso_r.cpu().numpy())
+                if reso_r is not None:
+                    reso_r_list.append(reso_r.cpu().numpy())
+                else:
+                    reso_r_list = None
                 if args.skip_twice:
                     skip_twice_r = all_policy_r[:,:,:,-2]
                     skip_twice_r_list.append(skip_twice_r.detach().cpu().numpy())
