@@ -1,7 +1,7 @@
 # TODO To train to get the improved result for AR-Net(ResNet) (mAP~76.8)
 # TODO A. train for new adaptive model
 # TODO A-1. prepare each base model (for specific resolution) for 15 epochs
-python main_base.py minik  RGB --arch resnet50 --num_segments 16 --gd 20 --lr 0.001 --wd 1e-4 --lr_steps 20 40 --epochs 15 --batch-size 48 --dropout 0.5 --consensus_type=avg --eval-freq=1000 --npb --gpus 0 1 2 3 4 5 6 7 --exp_header minik_res50_t16_epo15_192_lr.001 --rescale_to 192 -j 36 --data_dir /MD1400/jhseon/datasets/minik --log_dir ../logs_tsm --workers 4 
+CUDA_VISIBLE_DEVICES=1 python main_base.py minik  RGB --arch resnet50 --num_segments 16 --gd 20 --lr 0.001 --wd 1e-4 --lr_steps 20 40 --epochs 15 --batch-size 48 --dropout 0.5 --consensus_type=avg --eval-freq=1 --npb --gpus 0 --exp_header minik_res50_t16_epo15_168_lr.001 --rescale_to 168 -j 36 --data_dir ../dataset/minik --log_dir ../logs_tsm --workers 4 
 
 #python main_base.py actnet RGB --arch resnet34 --num_segments 16 --gd 20 --lr 0.001 --wd 1e-4 --lr_steps 20 40 --epochs 15 --batch-size 48 --dropout 0.5 --consensus_type=avg --eval-freq=1 --npb --gpus 0 1 2 3 --exp_header actnet_res34_t16_epo15_168_lr.001 --rescale_to 168 -j 36 --data_dir ../../datasets/activity-net-v1.3 --log_dir ../logs_tsm --workers 4 
 
