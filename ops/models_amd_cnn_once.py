@@ -98,7 +98,7 @@ class TSN_Amd(nn.Module):
             self._split_base_cnn_to_block(self.base_model)
             self._prepare_policy_block(self.base_model)
             self._prepare_pos_encoding()
-            
+            self.last_fc_dropout = torch.nn.Dropout(p=self.dropout)
         if not self.before_softmax:
             self.softmax = nn.Softmax()
 
@@ -384,8 +384,11 @@ class TSN_Amd(nn.Module):
         all_r_list = []
         hx_list = []
         raw_r_list = []
-
-        
+        ''' 
+        input_data_dict = {}
+        for key in _input_data_dict.keys():
+            input_data_dict[key] = _input_data_dict[key].detach().clone()
+        '''
         sup_return = None
         sup2_return = None
         # input_data = input_data.detach()
@@ -435,14 +438,14 @@ class TSN_Amd(nn.Module):
                     exit_r_list.append(exit_r)
 
                 take_bool =  old_r_t[:,-1].unsqueeze(-1) > 0.5
-                take_old_ = old_r_t[:,-2].unsqueeze(-1)
-                take_curr_ = old_r_t[:,-1].unsqueeze(-1)
+                #take_old = old_r_t[:,-2].unsqueeze(-1)
+                #take_curr = old_r_t[:,-1].unsqueeze(-1)
                 take_old = torch.tensor(~take_bool, dtype=torch.float).cuda()
                 take_curr = torch.tensor(take_bool, dtype=torch.float).cuda()
                 r_t = old_r_t * take_old + r_t * take_curr
                 old_r_t = r_t
-#                 _r_t = old_r_t * take_old + r_t * take_curr
-#                 old_r_t = _r_t
+                #_r_t = old_r_t * take_old + r_t * take_curr
+                #old_r_t = _r_t
     
                 per_time_r_list.append(r_t)  
                 local_hx_list.append(hx)
@@ -475,7 +478,7 @@ class TSN_Amd(nn.Module):
         
         avgpool = torch.nn.AdaptiveAvgPool2d(output_size=(1, 1))
         input_data = avgpool(input_data)
-        input_data = torch.nn.Dropout(p=self.dropout)(input_data).squeeze(-1).squeeze(-1)
+        input_data = self.last_fc_dropout(input_data).squeeze(-1).squeeze(-1)
         return self.block_fc_backbone(name, input_data, self.new_fc)
                     
     
@@ -618,7 +621,7 @@ class TSN_Amd(nn.Module):
 #                     boundary_start = False
 #                     for t_i in range(self.time_steps):
 #                         avg_block_out += selected_block_outs[b_i, t_i, :]
-#                         is_selected = r_l_t[b_i,t_i,-1,-1] > 0.5
+#                         hs_selected = r_l_t[b_i,t_i,-1,-1] > 0.5
 #                         if is_selected: 
 #                             selected_frame_cnt +=1
 #                             output_base_out = F.softmax(avg_block_out/selected_frame_cnt, dim=-1)
@@ -658,7 +661,7 @@ class TSN_Amd(nn.Module):
                 early_stop_thr = 0.999
                 for b_i in range(batch_size):
                     max_i = self.time_steps
-                    early_stop_limit = 8
+                    early_stop_limit = 3
                     avg_block_out = 0
                     selected_frame_cnt = torch.tensor(0.0, dtype=torch.float)
                     output_class_dict = {}
