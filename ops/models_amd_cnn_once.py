@@ -38,7 +38,7 @@ class TSN_Amd(nn.Module):
         self.pretrain = pretrain
         self.reverese_try_cnt = 0
         self.fc_lr5 = fc_lr5
-        self.is_shift = True
+        self.is_shift = False
 
         # TODO(yue)
         self.args = args

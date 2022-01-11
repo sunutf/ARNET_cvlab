@@ -1670,7 +1670,11 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
 
         if use_ada_framework:
             r_list.append(r.detach().cpu().numpy())
-            reso_r_list.append(reso_r.detach().cpu().numpy())
+            if reso_r is not None:
+                reso_r_list.append(reso_r.detach().cpu().numpy())
+            else:
+                reso_r_list = None
+            
             if args.skip_twice:
                 skip_twice_r = all_policy_r[:,:,:,-2]
                 skip_twice_r_list.append(skip_twice_r.detach().cpu().numpy())
