@@ -457,6 +457,7 @@ class TSN_Amd(nn.Module):
         r_list = torch.stack(per_time_r_list, dim=1).view(_b, _t, num_of_policy+1, -1) #TK * (B, 2) -> B,T*K,2 -> B, T, K, 2                                                               
                                                                                     
         if self.args.use_conf_btw_blocks or self.args.use_local_policy_module:
+            backbone_features_dict = base_out_dict #{conv :  B*T*C}
             sup_return = torch.stack(raw_hx_list, dim=1).view(_b, _t, num_of_policy, -1) #TK*(B,feat) -> B,T*K,feat -> B, T, K, feat
             sup2_return = torch.stack(raw_r_list, dim=1).view(_b, _t, num_of_policy, -1) #TK*(B,2) -> B,T*K,2 -> B, T, K, 2
         
@@ -464,7 +465,7 @@ class TSN_Amd(nn.Module):
             exit_r_t = torch.stack(exit_r_list, dim=0).view(_b, _t, num_of_policy)
             return r_list, sup_return, sup2_return, exit_r_t
                
-        return r_list, sup_return, sup2_return, None
+        return r_list, sup_return, sup2_return, backbone_features_dict
 
     
     
@@ -587,7 +588,8 @@ class TSN_Amd(nn.Module):
             feat_dict[name] = _input
         
         #B,T,K,2/  B,T,K,feat/ B,T,K,2
-        r_l_t, hx_l_t, all_policy_result_l_t, exit_r_t = self.gate_fc_rnn_block_full(feat_dict, tau) 
+        #r_l_t, hx_l_t, all_policy_result_l_t, exit_r_t = self.gate_fc_rnn_block_full(feat_dict, tau) 
+        r_l_t, hx_l_t, all_policy_result_l_t, backbone_feat_dict = self.gate_fc_rnn_block_full(feat_dict, tau) 
                 
         if self.args.use_conf_btw_blocks:
             for i, name in enumerate(self.block_rnn_list):
@@ -781,9 +783,9 @@ class TSN_Amd(nn.Module):
             output = self.pass_last_rnn_block('new_fc', feat_dict[list(self.block_cnn_dict.keys())[-1]], r_l_t[:,:,-1,-1])
         
         if self.args.use_conf_btw_blocks or self.args.use_early_stop :
-            return output.squeeze(1), r_l_t[:,:,:,-1], all_policy_result_l_t, torch.stack(block_out_list, dim=2), return_supp, exit_r_t
+            return output.squeeze(1), r_l_t[:,:,:,-1], all_policy_result_l_t, torch.stack(block_out_list, dim=2), return_supp, backbone_feat_dict
         else:
-            return output.squeeze(1), r_l_t[:,:,:,-1], None, None, block_out, exit_r_t
+            return output.squeeze(1), r_l_t[:,:,:,-1], None, None, block_out, backbone_feat_dict
             
     def amd_distil_combine_logits(self, r_l, base_out_l):
         # r_l        B, T, A, 

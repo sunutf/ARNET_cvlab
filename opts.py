@@ -117,6 +117,7 @@ parser.add_argument('--use_early_exit', action='store_true', help='early_exit')
 parser.add_argument('--amd_consensus_type', type=str, default='avg') 
 parser.add_argument('--visual_log', type=str, default="")
 parser.add_argument('--cnt_log', type=str, default="")  
+parser.add_argument('--feature_bank_path', type=str, default="")  
 
 
 

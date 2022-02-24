@@ -3,6 +3,8 @@ import warnings
 warnings.filterwarnings("ignore")
 import wandb
 import os
+import _pickle as cp
+import os.path as osp
 import sys
 import time
 import torch.nn.parallel
@@ -12,10 +14,10 @@ import torch.nn.functional as F
 from torch.nn.utils import clip_grad_norm_
 import math
 
-from ops.dataset import TSNDataSet
+from ops.loc_dataset import TSNDataSet
 from ops.models_ada import TSN_Ada
 #from ops.models_ada_runtime import TSN_Ada
-#from ops.models_amd import TSN_Amd
+from ops.models_amd_cnn_once import TSN_Amd
 from ops.transforms import *
 from opts import parser
 from ops import dataset_config
@@ -1670,6 +1672,7 @@ def train(train_loader, model, criterion, optimizer, epoch, logger, exp_full_pat
 
         if use_ada_framework:
             r_list.append(r.detach().cpu().numpy())
+            reso_r = None
             if reso_r is not None:
                 reso_r_list.append(reso_r.cpu().numpy())
             else:
@@ -1870,10 +1873,12 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
         for i, input_tuple in enumerate(val_loader):
             #input_tuple = input_tuple[0]
             target = input_tuple[-1].cuda()
-#             local_target = input_tuple[2].cuda()
-#             pdb.set_trace()
+            local_target = input_tuple[1].cuda()
             input = input_tuple[0]
-
+            if args.save_meta :
+                vids = input_tuple[2]
+                inds = input_tuple[3]
+            
             # compute output
 
             if args.ada_reso_skip or args.ada_depth_skip:
@@ -1888,14 +1893,13 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                     if args.save_meta and args.save_all_preds:
                         output, r, all_policy_r, all_preds = model(input=input_tuple[:-1 + meta_offset], tau=tau)
                     elif args.use_conf_btw_blocks or args.use_early_stop:
-                        output, r, all_policy_r, feat_outs, early_stop_r, reso_r = model(input=input_tuple[:-1 + meta_offset], tau=tau)
+                        output, r, all_policy_r, feat_outs, early_stop_r, backbone_feat_dict = model(input=input_tuple[:-1 + meta_offset], tau=tau)
                     elif args.use_local_policy_module:
                         output, r, all_policy_r, base_outs, dual_policy_r, similarity_r = model(input=input_tuple[:-1 + meta_offset], tau=tau)
                     else:
-                        output, r, all_policy_r, feat_outs, base_outs, reso_r = model(input=input_tuple[:-1 + meta_offset], tau=tau)
+                        output, r, all_policy_r, feat_outs, base_outs, backbone_feat_dict = model(input=input_tuple[:-1 + meta_offset], tau=tau)
                     total_runtime += (time.time() - start_runtime)
                     acc_loss = get_criterion_loss(criterion, output, target)
-
                 if use_ada_framework:
                     acc_loss, eff_loss, each_losses = compute_every_losses(r, all_policy_r, acc_loss, epoch)
                     acc_loss = acc_loss * accuracy_weight
@@ -1997,7 +2001,27 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
             losses.update(loss.item(), input.size(0))
             top1.update(prec1.item(), input.size(0))
             top5.update(prec5.item(), input.size(0))
-              
+            
+            ###Save Log file###
+            if args.feature_bank_path != '':
+                if not osp.exists(osp.join(args.feature_bank_path)):
+                    os.mkdir(osp.join(args.feature_bank_path))
+
+                for i, (vid, vid_inds) in enumerate(zip(vids, inds)):
+                    out_pkl = osp.join(args.feature_bank_path,vid+'.pkl')
+                    _vid_feat_dict = {}
+                    for j, vid_ind in enumerate(vid_inds.cpu().tolist()):
+                        _ind_feat_dict ={}
+                        for k, stage in enumerate(args.block_rnn_list):
+
+                            _ind_feat_dict[stage] = {
+                                "feat":backbone_feat_dict[stage][i,j].cpu(),
+                                "flag":r[i,j,k+1].cpu()
+                                }
+                        _vid_feat_dict[vid_ind] = _ind_feat_dict
+                    with open(out_pkl, 'wb') as f:
+                        cp.dump(_vid_feat_dict, f)
+
             if args.cnt_log != '':
                 target_vals = target.cpu().numpy()
                 output_vals = output.max(dim=1)[1].cpu().numpy()
@@ -2020,8 +2044,8 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
             if args.visual_log != '':
                 target_val = target.cpu().numpy()[0][0]
                 output_val = output.max(dim=1)[1].cpu().numpy()[0]
-#                 loc_target_val = local_target.cpu().numpy()[0]
-#                 loc_output_val = r[:,:,-1].cpu().numpy()[0]
+                loc_target_val = local_target.cpu().numpy()[0]
+                loc_output_val = r[:,:,-1].cpu().numpy()[0]
                 
             
                 input_path_list = list()
@@ -2040,17 +2064,17 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
 
                 print('input path list')
                 print(input_path_list[0])
-#                 print(input_path_list[0])
-#                 print(lambda x : x.cpu.numpy(), input_path_list[1:])
+                print(input_path_list[0])
+                print(lambda x : x.cpu.numpy(), input_path_list[1:])
                 print('target')
                 print(target_val)
                 print('output')
                 print(output_val)
                 print('r')
-#                 print('loc_target')
-#                 print(loc_target_val)
-#                 print('loc_output')
-#                 print(loc_output_val)
+                print('loc_target')
+                print(loc_target_val)
+                print('loc_output')
+                print(loc_output_val)
                 
                 for i in range(1):
                     print(reverse_onehot(r[i, :, :].cpu().numpy()))
@@ -2078,13 +2102,11 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
             # TODO(yue)
             all_results.append(output)
             all_targets.append(target)
-#             total_loc = (local_target+2*r[:,:,-1]).cpu().numpy()# (0,1) + 2*(0,1) =? TN:0 FN:1 FP:2 TP:3
-#             all_local['TN'] += np.count_nonzero(total_loc == 0)
-#             all_local['FN'] += np.count_nonzero(total_loc == 1)
-#             all_local['FP'] += np.count_nonzero(total_loc == 2)
-#             all_local['TP'] += np.count_nonzero(total_loc == 3)
-            
-
+            total_loc = (local_target+2*r[:,:,-1]).cpu().numpy()# (0,1) + 2*(0,1) =? TN:0 FN:1 FP:2 TP:3
+            all_local['TN'] += np.count_nonzero(total_loc == 0)
+            all_local['FN'] += np.count_nonzero(total_loc == 1)
+            all_local['FP'] += np.count_nonzero(total_loc == 2)
+            all_local['TP'] += np.count_nonzero(total_loc == 3)
             
             if not i_dont_need_bb:
                 for bb_i in range(len(all_bb_results)):
@@ -2107,6 +2129,7 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
             
             if use_ada_framework:
                 r_list.append(r.cpu().numpy())
+                reso_r = None
                 if reso_r is not None:
                     reso_r_list.append(reso_r.cpu().numpy())
                 else:
@@ -2173,13 +2196,15 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                         )
                     
 #                     #TN:0 FN:1 FP:2 TP:3
-#                     print_output += extra_each_loss_str(each_terms)
-#                     print_output += '\n location TP:{}, FP:{}, FN:{} ,TN: {} \t'.format(
-#                         all_local['TP'], all_local['FP'], all_local['FN'], all_local['TN']
-#                     )
+                    print_output += extra_each_loss_str(each_terms)
+                    print_output += '\n location TP:{}, FP:{}, FN:{} ,TN: {} \t'.format(
+                        all_local['TP'], all_local['FP'], all_local['FN'], all_local['TN']
+                    )
 
                 print(print_output)
     
+    print('\n location TP:{}, FP:{}, FN:{} ,TN: {} \t'.format(\
+        all_local['TP'], all_local['FP'], all_local['FN'], all_local['TN']))
     mAP, _ = cal_map(torch.cat(all_results, 0).cpu(),
                      torch.cat(all_targets, 0)[:, 0:1].cpu())  # TODO(yue) single-label mAP
     mmAP, _ = cal_map(torch.cat(all_results, 0).cpu(), torch.cat(all_targets, 0).cpu())  # TODO(yue)  multi-label mAP
@@ -2381,7 +2406,7 @@ def runtime_validate(val_loader, model, criterion, epoch, logger, exp_full_path,
                     if args.save_meta and args.save_all_preds:
                         output, r, all_policy_r, all_preds = model(input=input_tuple[:-1 + meta_offset], tau=tau)
                     elif args.use_conf_btw_blocks or args.use_early_stop:
-                        output, r, all_policy_r, feat_outs, early_stop_r, reso_r = model(input=input_tuple[:-1 + meta_offset], tau=tau)
+                        output, r, all_policy_r, feat_outs, early_stop_r, reso_r = model(input=input_tuple[0], tau=tau)
                     elif args.use_local_policy_module:
                         output, r, all_policy_r, base_outs, dual_policy_r, similarity_r = model(input=input_tuple[:-1 + meta_offset], tau=tau)
                     else:
