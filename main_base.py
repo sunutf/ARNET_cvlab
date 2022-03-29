@@ -855,57 +855,58 @@ def validate(val_loader, model, criterion, epoch, logger, exp_full_path, tf_writ
                    
                 
             if args.visual_log != '':
-                target_val = target.cpu().numpy()[0][0]
-                output_val = output.max(dim=1)[1].cpu().numpy()[0]
-                loc_target_val = local_target.cpu().numpy()[0]
-                loc_output_val = r[:,:,-1].cpu().numpy()[0]
-                
-                input_path_list = list()
-                image_tmpl='image_{:05d}.jpg'
-                for seg_ind in input_tuple[meta_offset][0]:
-                    input_path_list.append(os.path.join(args.root_path, input_tuple[meta_offset-1][0], image_tmpl.format(int(seg_ind))))
-              
-                if target_val == output_val :
-                    print("True")
-                    visual_log.write("\nTrue")
-                else :
-                    print("False")
-                    visual_log.write("\nFalse")
+                for i in range(args.batch_size):
+                    target_val = target.cpu().numpy()[i][0]
+                    output_val = output.max(dim=1)[1].cpu().numpy()[i]
+                    loc_target_val = local_target.cpu().numpy()[i]
+                    loc_output_val = r[:,:,-1].cpu().numpy()[i]
+                    
+                    input_path_list = list()
+                    image_tmpl='image_{:05d}.jpg'
+                    for seg_ind in input_tuple[meta_offset][i]:
+                        input_path_list.append(os.path.join(args.root_path, input_tuple[meta_offset-1][i], image_tmpl.format(int(seg_ind))))
+                  
+                    if target_val == output_val :
+                        print("True")
+                        visual_log.write("\nTrue")
+                    else :
+                        print("False")
+                        visual_log.write("\nFalse")
 
-                print('input path list')
-                print(input_path_list[0])
+                    print('input path list')
+                    print(input_path_list[i])
 
-                print('target')
-                print(target_val)
-                print('output')
-                print(output_val)
-                print('r')
-                print('loc_target')
-                print(loc_target_val)
-                print('loc_output')
-                print(loc_output_val)
-                
-                for i in range(1):
-                    print(reverse_onehot(r[i, :, :].cpu().numpy()))
+                    print('target')
+                    print(target_val)
+                    print('output')
+                    print(output_val)
+                    print('r')
+                    print('loc_target')
+                    print(loc_target_val)
+                    print('loc_output')
+                    print(loc_output_val)
+                    
+                    for i in range(1):
+                        print(reverse_onehot(r[i, :, :].cpu().numpy()))
 
-                #visual_log.write('\ninput path list: ')
-                for i in range(len(input_path_list)):
+                    #visual_log.write('\ninput path list: ')
+                    for i in range(len(input_path_list)):
+                        visual_log.write('\n')
+                        visual_log.write(input_path_list[i])
+
                     visual_log.write('\n')
-                    visual_log.write(input_path_list[i])
-
-                visual_log.write('\n')
-                visual_log.write(str(target_val))
-                visual_log.write('\n')
-                visual_log.write(str(output_val))
-                visual_log.write('\n')
-                visual_log.write(str(loc_target_val))
-                visual_log.write('\n')
-                visual_log.write(str(loc_output_val))
-                visual_log.write('\n')
-                
-                for i in range(1):
-                    visual_log.writelines(str(reverse_onehot(r[i, :, :].cpu().numpy())))
-                visual_log.write('\n')
+                    visual_log.write(str(target_val))
+                    visual_log.write('\n')
+                    visual_log.write(str(output_val))
+                    visual_log.write('\n')
+                    visual_log.write(str(loc_target_val))
+                    visual_log.write('\n')
+                    visual_log.write(str(loc_output_val))
+                    visual_log.write('\n')
+                    
+                    for i in range(1):
+                        visual_log.writelines(str(reverse_onehot(r[i, :, :].cpu().numpy())))
+                    visual_log.write('\n')
 
             all_results.append(output)
             all_targets.append(target)
